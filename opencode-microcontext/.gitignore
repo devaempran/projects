@@ -1,0 +1,42 @@
+.DS_Store
+node_modules
+.worktrees
+.sst
+.env
+.env.local
+.idea
+.vscode
+.codex
+*~
+playground
+tmp
+dist
+ts-dist
+.turbo
+**/.serena
+.serena/
+**/.omo
+.omo/
+/result
+refs
+Session.vim
+/opencode.json
+a.out
+target
+.scripts
+.direnv/
+
+# Local dev files
+opencode-dev
+UPCOMING_CHANGELOG.md
+logs/
+*.bun-build
+tsconfig.tsbuildinfo
+
+# test-loop run state (see TEST_LOOP_RUNBOOK.md) — regenerated every cycle, not for commit
+test-loop/state.json
+test-loop/history.jsonl
+
+# Kept on disk locally, excluded from the devaempran/projects push
+**/*.md
+.claude/
