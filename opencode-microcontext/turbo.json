@@ -17,6 +17,14 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
+    "@opencode-ai/server#test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "@opencode-ai/protocol#test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
     "@opencode-ai/app#test": {
       "dependsOn": ["^build"],
       "outputs": []

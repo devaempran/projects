@@ -35,8 +35,13 @@ export type PlanSubtaskRaw = typeof PlanSubtaskRaw.Type
 export const PlanRaw = Schema.Struct({ subtasks: Schema.Array(PlanSubtaskRaw) })
 export type PlanRaw = typeof PlanRaw.Type
 
+// Atomicity line addresses diagnosed planner over-decomposition (test-loop/model-issues.md
+// runs 30 & 32): the planner split one atomic write/edit call into 3 dependsOn-chained
+// read/modify/save subtasks, producing a doubled comment and wasted subtasks. `write`,
+// `edit`, and `apply_patch` already read, modify, and save in one call, so splitting them
+// only adds noise.
 export const SYSTEM =
-  "You are a planner for a small-context coding agent. Decompose the task into the smallest set of independent, concrete subtasks. Give each subtask a numeric id (1, 2, 3, …), a one-sentence description, and list the ids it depends on in dependsOn (empty if none). Prefer few subtasks; avoid overlap."
+  "You are a planner for a small-context coding agent. Decompose the task into the smallest set of independent, concrete subtasks. Give each subtask a numeric id (1, 2, 3, …), a one-sentence description, and list the ids it depends on in dependsOn (empty if none). Prefer few subtasks; avoid overlap. A single file creation or edit that one write, edit, or apply_patch call can accomplish is exactly one subtask — never split a file mutation into separate read/modify/save steps; those tools already read, modify, and save in one call."
 
 /** Pure prompt builder — unit-testable without a model. */
 export const buildPrompt = (task: string): string =>

@@ -44,6 +44,9 @@ const PAGE = /* html */ `<!doctype html>
   .stage.done { color: var(--ok); border-color: var(--ok); }
   .subtask { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
   .subtask:last-child { margin-bottom: 0; }
+  .children { margin-left: 18px; padding-left: 10px; border-left: 2px solid var(--border); margin-top: -2px; margin-bottom: 8px; }
+  .children:last-child { margin-bottom: 0; }
+  .children .subtask:last-child { margin-bottom: 0; }
   .subtask > .head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; }
   .subtask .id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); font-size: 12px; }
   .subtask .desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -52,6 +55,7 @@ const PAGE = /* html */ `<!doctype html>
   .badge.done { color: var(--ok); border-color: var(--ok); }
   .badge.failed, .badge.pending { }
   .badge.failed { color: var(--bad); border-color: var(--bad); }
+  .badge.decomposed { color: var(--accent); border-color: var(--accent); }
   .badge.role-planner { color: var(--accent); border-color: var(--accent); }
   .badge.role-worker { color: var(--muted); border-color: var(--muted); }
   .badge.role-reducer { color: var(--warn); border-color: var(--warn); }
@@ -88,6 +92,7 @@ const PAGE = /* html */ `<!doctype html>
 <main>
   <div class="col">
     <section class="panel"><h2>Plan</h2><div class="body"><div id="task" class="task empty">No task yet.</div></div></section>
+    <section class="panel" id="now"><h2>Now</h2><div class="body"><div id="nowBody" class="empty">Nothing active yet.</div></div></section>
     <section class="panel"><h2>Stages</h2><div class="body"><div id="stages" class="stages"></div></div></section>
     <section class="panel"><h2>Summary</h2><div class="body"><div id="summary" class="result empty">—</div>
       <ul id="gaps" class="gaps"></ul></div></section>
@@ -108,15 +113,75 @@ function ensure(id) {
     task: "", status: "planning", iteration: 0, maxIterations: 0,
     order: [], subtasks: new Map(), summary: "", gaps: [], complete: false, open: new Set(),
     calls: new Map(), openCalls: new Set(),
+    activeSubtaskId: null, lastObservation: null,
   });
   if (!active) active = id;
   return sessions.get(id);
 }
-function ensureSub(s, id, description) {
-  if (!s.subtasks.has(id)) s.subtasks.set(id, { description: description || "", dependsOn: [], status: "pending", result: "", steps: [], observations: [] });
+function ensureSub(s, id, description, parentId, depth) {
+  if (!s.subtasks.has(id)) s.subtasks.set(id, {
+    description: description || "", dependsOn: [], status: "pending", result: "", steps: [], observations: [],
+    parentId: parentId != null ? parentId : null, depth: typeof depth === "number" ? depth : 0, children: [],
+  });
   const sub = s.subtasks.get(id);
   if (description) sub.description = description;
+  if (parentId != null && sub.parentId == null) sub.parentId = parentId;
+  if (typeof depth === "number") sub.depth = depth;
   return sub;
+}
+// Links a child into its parent's children array, keeping order stable and de-duplicated.
+// No-op if the child has no parent or the parent hasn't been seen yet (a later ensureSub /
+// re-link call will pick it up once the parent exists).
+function linkChild(s, id) {
+  const sub = s.subtasks.get(id);
+  if (!sub || sub.parentId == null) return;
+  const parent = s.subtasks.get(sub.parentId);
+  if (!parent) return;
+  if (!parent.children.includes(id)) parent.children.push(id);
+}
+// Removes id from its current parent's children array, if any. Counterpart to linkChild,
+// used when a subtask id is being reused for a new, logically distinct subtask so it doesn't
+// keep rendering under its old parent.
+function unlinkChild(s, id) {
+  const sub = s.subtasks.get(id);
+  if (!sub || sub.parentId == null) return;
+  const parent = s.subtasks.get(sub.parentId);
+  if (!parent) return;
+  const idx = parent.children.indexOf(id);
+  if (idx !== -1) parent.children.splice(idx, 1);
+}
+// Walks the parentId chain from id up to its root, returning e.g. "s1 › s1.2".
+// Bounded to guard against a malformed/cyclic parentId chain.
+function lineagePath(s, id) {
+  const path = [];
+  let cur = id;
+  let guard = 0;
+  while (cur != null && guard++ < 64 && !path.includes(cur)) {
+    path.unshift(cur);
+    const sub = s.subtasks.get(cur);
+    cur = sub ? sub.parentId : null;
+  }
+  return path.join(" › ");
+}
+// The most recently started LLM call that has not yet received a matching finished event.
+function activeCall(s) {
+  const list = [...s.calls.values()];
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i].status === "running") return list[i];
+  }
+  return null;
+}
+// Defensive failsafe: clears the #now panel's "active" indicators (the running subtask and
+// any LLM call still marked in-flight). Normally activeSubtaskId is cleared by
+// subtask.finished / subtask.decomposed and call status by llm.call.finished, but if the
+// orchestrator dies mid-step none of those arrive and the panel would show a permanently
+// stale "active" subtask/call. Called on "finished" and, as a per-iteration backstop, on
+// "iteration.started".
+function clearActiveIndicators(s) {
+  s.activeSubtaskId = null;
+  for (const c of s.calls.values()) {
+    if (c.status === "running") c.status = "aborted";
+  }
 }
 function callKey(role, subtaskId, step, iteration, attempt) {
   return role + ":" + (subtaskId == null ? "" : subtaskId) + ":" + (step == null ? "" : step) +
@@ -190,50 +255,125 @@ function render() {
   gaps.innerHTML = "";
   s.gaps.forEach((g) => { const li = document.createElement("li"); li.textContent = g; gaps.appendChild(li); });
 
+  renderCalls(s);
+  renderNow(s);
+
   const tasks = document.getElementById("tasks");
   const order = s.order.length ? s.order : [...s.subtasks.keys()];
-  if (order.length === 0) { tasks.className = "empty"; tasks.textContent = "No subtasks yet."; return; }
+  const roots = order.filter((id) => { const sub = s.subtasks.get(id); return sub && sub.parentId == null; });
+  if (roots.length === 0) { tasks.className = "empty"; tasks.textContent = "No subtasks yet."; return; }
   tasks.className = "";
   tasks.innerHTML = "";
-  for (const id of order) {
-    const sub = s.subtasks.get(id);
-    if (!sub) continue;
-    const wrap = document.createElement("div");
-    wrap.className = "subtask" + (s.open.has(id) ? " open" : "");
-    const head = document.createElement("div");
-    head.className = "head";
-    head.innerHTML =
-      '<span class="id">' + esc(id) + '</span>' +
-      '<span class="desc">' + esc(sub.description) + '</span>' +
-      (sub.dependsOn.length ? '<span class="deps">⇢ ' + esc(sub.dependsOn.join(", ")) + '</span>' : '') +
-      '<span class="badge ' + sub.status + '">' + sub.status + '</span>';
-    head.onclick = () => { s.open.has(id) ? s.open.delete(id) : s.open.add(id); render(); };
-    wrap.appendChild(head);
+  const seen = new Set();
+  roots.forEach((id) => renderSubtaskNode(tasks, s, id, seen));
+}
 
-    const detail = document.createElement("div");
-    detail.className = "detail";
-    if (sub.result) detail.innerHTML += '<div class="result"><b>result:</b> ' + esc(sub.result) + '</div>';
-    sub.steps.forEach((st) => {
-      const d = document.createElement("div");
-      d.className = "step";
-      d.innerHTML = '<div class="label">context packet · step ' + st.step + '</div>';
-      const pre = document.createElement("pre");
-      pre.textContent = st.contextPacket;
-      d.appendChild(pre);
-      detail.appendChild(d);
-    });
-    sub.observations.forEach((o) => {
-      const d = document.createElement("div");
-      d.className = "obs";
-      d.innerHTML = '<b>' + esc(o.tool) + '</b> ⇒ ' + esc(o.output);
-      detail.appendChild(d);
-    });
-    if (!sub.result && sub.steps.length === 0 && sub.observations.length === 0)
-      detail.innerHTML = '<span class="empty">No steps yet.</span>';
-    wrap.appendChild(detail);
-    tasks.appendChild(wrap);
+// Renders one subtask node (and, recursively, its children beneath it in an indented
+// .children wrapper) into container. seen is threaded through the whole tree so a
+// malformed/cyclic parent-child link can't cause infinite recursion or a node rendering
+// under more than one parent.
+function renderSubtaskNode(container, s, id, seen) {
+  if (seen.has(id) || !s.subtasks.has(id)) return;
+  seen.add(id);
+  const sub = s.subtasks.get(id);
+  const wrap = document.createElement("div");
+  wrap.className = "subtask" + (s.open.has(id) ? " open" : "");
+  const head = document.createElement("div");
+  head.className = "head";
+  const childCount = sub.children ? sub.children.length : 0;
+  const statusBadge = sub.status === "decomposed"
+    ? '<span class="badge decomposed">⑂ ' + esc(childCount) + ' subtasks</span>'
+    : '<span class="badge ' + esc(sub.status) + '">' + esc(sub.status) + '</span>';
+  head.innerHTML =
+    '<span class="id">' + esc(id) + '</span>' +
+    '<span class="desc">' + esc(sub.description) + '</span>' +
+    (sub.dependsOn.length ? '<span class="deps">⇢ ' + esc(sub.dependsOn.join(", ")) + '</span>' : '') +
+    statusBadge;
+  head.onclick = () => { s.open.has(id) ? s.open.delete(id) : s.open.add(id); render(); };
+  wrap.appendChild(head);
+
+  const detail = document.createElement("div");
+  detail.className = "detail";
+  if (sub.result) detail.innerHTML += '<div class="result"><b>result:</b> ' + esc(sub.result) + '</div>';
+  sub.steps.forEach((st) => {
+    const d = document.createElement("div");
+    d.className = "step";
+    d.innerHTML = '<div class="label">context packet · step ' + st.step + '</div>';
+    const pre = document.createElement("pre");
+    pre.textContent = st.contextPacket;
+    d.appendChild(pre);
+    detail.appendChild(d);
+  });
+  sub.observations.forEach((o) => {
+    const d = document.createElement("div");
+    d.className = "obs";
+    d.innerHTML = '<b>' + esc(o.tool) + '</b> ⇒ ' + esc(o.output);
+    detail.appendChild(d);
+  });
+  if (!sub.result && sub.steps.length === 0 && sub.observations.length === 0 && childCount === 0)
+    detail.innerHTML = '<span class="empty">No steps yet.</span>';
+  wrap.appendChild(detail);
+  container.appendChild(wrap);
+
+  const kids = (sub.children || []).filter((cid) => cid !== id && !seen.has(cid));
+  if (kids.length) {
+    const childrenWrap = document.createElement("div");
+    childrenWrap.className = "children";
+    kids.forEach((cid) => renderSubtaskNode(childrenWrap, s, cid, seen));
+    container.appendChild(childrenWrap);
   }
-  renderCalls(s);
+}
+
+function renderNow(s) {
+  const body = document.getElementById("nowBody");
+  body.className = "";
+  body.innerHTML = "";
+
+  const stageLine = document.createElement("div");
+  stageLine.className = "obs";
+  const stageLabel = s.status === "failed" ? "failed" : s.status;
+  stageLine.innerHTML = '<b>stage</b> ' + esc(stageLabel) +
+    (s.maxIterations ? ' · iteration ' + esc(s.iteration) + ' / ' + esc(s.maxIterations) : '');
+  body.appendChild(stageLine);
+
+  const activeId = s.activeSubtaskId;
+  const activeSub = activeId ? s.subtasks.get(activeId) : null;
+  if (activeSub) {
+    const subLine = document.createElement("div");
+    subLine.className = "obs";
+    subLine.innerHTML = '<b>subtask</b> ' + esc(lineagePath(s, activeId)) + ' — ' + esc(activeSub.description);
+    body.appendChild(subLine);
+
+    const stepLine = document.createElement("div");
+    stepLine.className = activeSub.steps.length ? "obs" : "obs empty";
+    stepLine.innerHTML = activeSub.steps.length
+      ? '<b>worker</b> step ' + esc(activeSub.steps[activeSub.steps.length - 1].step)
+      : "No worker steps yet.";
+    body.appendChild(stepLine);
+  } else {
+    const noneLine = document.createElement("div");
+    noneLine.className = "empty";
+    noneLine.textContent = "No active subtask.";
+    body.appendChild(noneLine);
+  }
+
+  const call = activeCall(s);
+  const callLine = document.createElement("div");
+  callLine.className = call ? "obs" : "obs empty";
+  callLine.innerHTML = call
+    ? '<b>llm call</b> ' + esc(call.role) +
+      (call.attempt > 1 ? ' (attempt ' + esc(call.attempt) + ')' : '') +
+      ' · ' + esc(call.model || "?") +
+      (typeof call.estimatedInputTokens === "number" ? ' · ~' + esc(fmtNum(call.estimatedInputTokens)) + ' tok est' : '')
+    : "No LLM call in flight.";
+  body.appendChild(callLine);
+
+  const obsLine = document.createElement("div");
+  obsLine.className = s.lastObservation ? "obs" : "obs empty";
+  obsLine.innerHTML = s.lastObservation
+    ? '<b>last tool</b> ' + esc(s.lastObservation.tool)
+    : "No observations yet.";
+  body.appendChild(obsLine);
 }
 
 function renderCalls(s) {
@@ -327,16 +467,69 @@ function handle(type, d) {
     case "plan.started": s.task = d.task; s.status = "planning"; break;
     case "planned":
       s.order = d.subtasks.map((x) => x.id);
-      d.subtasks.forEach((x) => { const sub = ensureSub(s, x.id, x.description); sub.dependsOn = x.dependsOn || []; });
+      d.subtasks.forEach((x) => {
+        const sub = ensureSub(s, x.id, x.description, x.parentId, x.depth);
+        sub.dependsOn = x.dependsOn || [];
+        linkChild(s, x.id);
+      });
       break;
-    case "iteration.started": s.iteration = d.iteration; s.maxIterations = d.maxIterations; s.status = "working"; break;
-    case "subtask.started": { const sub = ensureSub(s, d.subtaskId, d.description); sub.status = "running"; break; }
+    case "iteration.started":
+      s.iteration = d.iteration; s.maxIterations = d.maxIterations; s.status = "working";
+      clearActiveIndicators(s);
+      break;
+    case "subtask.started": {
+      const existing = s.subtasks.get(d.subtaskId);
+      if (existing && (existing.status === "done" || existing.status === "failed" || existing.status === "decomposed")) {
+        // Verifier-supplied ids aren't minted by the backend (unlike planner/decompose ids),
+        // so nothing guarantees they're unique across iterations. A terminal entry here means
+        // this id is being reused for a new, logically distinct subtask (e.g. "s1" was a
+        // decomposed parent last iteration) — start it over instead of merging into the stale
+        // entry, which would otherwise inherit its old children/result/steps/observations.
+        unlinkChild(s, d.subtaskId);
+        existing.status = "pending";
+        existing.result = "";
+        existing.children = [];
+        existing.steps = [];
+        existing.observations = [];
+        existing.parentId = null;
+      }
+      const sub = ensureSub(s, d.subtaskId, d.description, d.parentId, d.depth);
+      sub.status = "running";
+      linkChild(s, d.subtaskId);
+      s.activeSubtaskId = d.subtaskId;
+      break;
+    }
+    case "subtask.decomposed": {
+      const parent = ensureSub(s, d.subtaskId);
+      parent.status = "decomposed";
+      const childDepth = typeof parent.depth === "number" ? parent.depth + 1 : 1;
+      (d.children || []).forEach((c) => {
+        const child = ensureSub(s, c.id, c.description, c.parentId != null ? c.parentId : d.subtaskId,
+          typeof c.depth === "number" ? c.depth : childDepth);
+        child.dependsOn = c.dependsOn || [];
+        linkChild(s, c.id);
+      });
+      if (s.activeSubtaskId === d.subtaskId) s.activeSubtaskId = null;
+      break;
+    }
     case "worker.step": ensureSub(s, d.subtaskId).steps.push({ step: d.step, contextPacket: d.contextPacket }); break;
-    case "observation": ensureSub(s, d.subtaskId).observations.push({ tool: d.tool, output: d.output }); break;
-    case "subtask.finished": { const sub = ensureSub(s, d.subtaskId); sub.status = d.status; sub.result = d.result; break; }
+    case "observation":
+      ensureSub(s, d.subtaskId).observations.push({ tool: d.tool, output: d.output });
+      s.lastObservation = { subtaskId: d.subtaskId, tool: d.tool };
+      break;
+    case "subtask.finished": {
+      const sub = ensureSub(s, d.subtaskId);
+      sub.status = d.status;
+      sub.result = d.result;
+      if (s.activeSubtaskId === d.subtaskId) s.activeSubtaskId = null;
+      break;
+    }
     case "reduced": s.summary = d.summary; s.status = "reducing"; break;
     case "verified": s.gaps = d.gaps || []; s.complete = d.complete; s.status = "verifying"; break;
-    case "finished": s.status = d.status; break;
+    case "finished":
+      s.status = d.status;
+      clearActiveIndicators(s);
+      break;
     case "llm.call.started": {
       const c = ensureCall(s, d);
       c.model = d.model || "";

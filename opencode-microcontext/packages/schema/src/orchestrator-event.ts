@@ -20,6 +20,8 @@ const SubtaskInfo = Schema.Struct({
   id: Schema.String,
   description: Schema.String,
   dependsOn: Schema.Array(Schema.String),
+  parentId: Schema.String.pipe(Schema.optional),
+  depth: NonNegativeInt.pipe(Schema.optional),
 }).annotate({ identifier: "session.next.orchestrator.subtask" })
 
 const Role = Schema.Literals(["planner", "worker", "reducer", "verifier"])
@@ -44,9 +46,23 @@ export type IterationStarted = typeof IterationStarted.Type
 
 export const SubtaskStarted = Event.define({
   type: "session.next.orchestrator.subtask.started",
-  schema: { ...Base, subtaskId: Schema.String, description: Schema.String },
+  schema: {
+    ...Base,
+    subtaskId: Schema.String,
+    description: Schema.String,
+    parentId: Schema.String.pipe(Schema.optional),
+    depth: NonNegativeInt.pipe(Schema.optional),
+  },
 })
 export type SubtaskStarted = typeof SubtaskStarted.Type
+
+// Fired when a worker chose to decompose its subtask into children instead of calling a
+// tool or `finish`; the parent contributes no result to the reducer.
+export const SubtaskDecomposed = Event.define({
+  type: "session.next.orchestrator.subtask.decomposed",
+  schema: { ...Base, subtaskId: Schema.String, children: Schema.Array(SubtaskInfo) },
+})
+export type SubtaskDecomposed = typeof SubtaskDecomposed.Type
 
 // The freshly built minimal context packet handed to the worker for one step —
 // this is the "context put for each step" surfaced in the live view.
@@ -148,6 +164,7 @@ export const Definitions = Event.inventory(
   Planned,
   IterationStarted,
   SubtaskStarted,
+  SubtaskDecomposed,
   WorkerStep,
   Observation,
   SubtaskFinished,

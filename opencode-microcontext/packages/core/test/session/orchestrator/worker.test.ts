@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
+import type { LLMRequest } from "@opencode-ai/llm"
 import { WorkerExecutor } from "@opencode-ai/core/session/orchestrator/worker"
-import { fakeClient, fakeModel, toolCallOf } from "./lib"
+import { OrchestratorObserver } from "@opencode-ai/core/session/orchestrator/observer"
+import { fakeClient, fakeModel, latestPromptText, toolCallOf } from "./lib"
 
 const makeToolRunner = (outputs: string[]) => {
   const calls: { tool: string; input: unknown }[] = []
@@ -141,5 +143,198 @@ describe("WorkerExecutor", () => {
     expect(result.status).toBe("failed")
     expect(result.result.toLowerCase()).toContain("unknown tool")
     expect(calls.length).toBe(0)
+  })
+
+  test("decompose with valid children returns a decomposed result without using the ToolRunner", async () => {
+    const { calls, runner } = makeToolRunner([])
+    const result = await Effect.runPromise(
+      WorkerExecutor.run({
+        model: fakeModel,
+        task: "T",
+        subtask: { id: "s1", description: "D" },
+        tools: runner,
+        toolCatalog: [{ name: "read", description: "Read a file" }],
+      }).pipe(
+        Effect.provide(
+          fakeClient([
+            toolCallOf("decompose", { subtasks: [{ description: "child one" }, { description: "child two" }] }),
+          ]),
+        ),
+      ),
+    )
+    expect(result).toEqual({
+      subtaskId: "s1",
+      status: "decomposed",
+      result: "Decomposed into 2 subtasks",
+      children: [{ description: "child one" }, { description: "child two" }],
+    })
+    expect(calls.length).toBe(0)
+  })
+
+  test("decompose is present in the tool catalog at depth 0 but absent at the max decompose depth", async () => {
+    const requests: Array<LLMRequest> = []
+    const { runner } = makeToolRunner([])
+    await Effect.runPromise(
+      WorkerExecutor.run({
+        model: fakeModel,
+        task: "T",
+        subtask: { id: "s1", description: "D" },
+        tools: runner,
+        depth: 0,
+        maxDecomposeDepth: 1,
+      }).pipe(Effect.provide(fakeClient([toolCallOf("finish", { status: "done", result: "ok" })], requests))),
+    )
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.tools?.map((t) => t.name)).toContain("decompose")
+
+    requests.length = 0
+    await Effect.runPromise(
+      WorkerExecutor.run({
+        model: fakeModel,
+        task: "T",
+        subtask: { id: "s1", description: "D" },
+        tools: runner,
+        depth: 1,
+        maxDecomposeDepth: 1,
+      }).pipe(Effect.provide(fakeClient([toolCallOf("finish", { status: "done", result: "ok" })], requests))),
+    )
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.tools?.map((t) => t.name)).not.toContain("decompose")
+  })
+
+  test("maxDecomposeDepth: 0 omits decompose even at depth 0", async () => {
+    const requests: Array<LLMRequest> = []
+    const { runner } = makeToolRunner([])
+    await Effect.runPromise(
+      WorkerExecutor.run({
+        model: fakeModel,
+        task: "T",
+        subtask: { id: "s1", description: "D" },
+        tools: runner,
+        depth: 0,
+        maxDecomposeDepth: 0,
+      }).pipe(Effect.provide(fakeClient([toolCallOf("finish", { status: "done", result: "ok" })], requests))),
+    )
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.tools?.map((t) => t.name)).not.toContain("decompose")
+  })
+
+  test("a malformed decompose call does not end the subtask -- the loop continues and a later finish resolves normally", async () => {
+    const { calls, runner } = makeToolRunner([])
+    const result = await Effect.runPromise(
+      WorkerExecutor.run({
+        model: fakeModel,
+        task: "T",
+        subtask: { id: "s1", description: "D" },
+        tools: runner,
+        maxSteps: 3,
+      }).pipe(
+        Effect.provide(
+          fakeClient([
+            toolCallOf("decompose", { subtasks: [{ description: "only one" }] }),
+            toolCallOf("finish", { status: "done", result: "answer" }),
+          ]),
+        ),
+      ),
+    )
+    expect(result).toEqual({ subtaskId: "s1", status: "done", result: "answer" })
+    expect(calls.length).toBe(0)
+  })
+
+  test("subtaskStarted forwards parentId/depth for a child node minted by decompose", async () => {
+    const { runner } = makeToolRunner([])
+    const started: Array<{ subtaskId: string; description: string; parentId?: string; depth?: number }> = []
+    const observer: OrchestratorObserver.Interface = {
+      ...OrchestratorObserver.noop,
+      subtaskStarted: (data) => {
+        started.push(data)
+        return Effect.void
+      },
+    }
+    await Effect.runPromise(
+      WorkerExecutor.run({
+        model: fakeModel,
+        task: "T",
+        subtask: { id: "s1.1", description: "child slice" },
+        tools: runner,
+        parentId: "s1",
+        depth: 1,
+        observer,
+      }).pipe(Effect.provide(fakeClient([toolCallOf("finish", { status: "done", result: "ok" })]))),
+    )
+    expect(started).toEqual([{ subtaskId: "s1.1", description: "child slice", parentId: "s1", depth: 1 }])
+  })
+
+  test("subtaskStarted has no parentId/depth for a top-level node", async () => {
+    const { runner } = makeToolRunner([])
+    const started: Array<{ subtaskId: string; description: string; parentId?: string; depth?: number }> = []
+    const observer: OrchestratorObserver.Interface = {
+      ...OrchestratorObserver.noop,
+      subtaskStarted: (data) => {
+        started.push(data)
+        return Effect.void
+      },
+    }
+    await Effect.runPromise(
+      WorkerExecutor.run({
+        model: fakeModel,
+        task: "T",
+        subtask: { id: "s1", description: "D" },
+        tools: runner,
+        observer,
+      }).pipe(Effect.provide(fakeClient([toolCallOf("finish", { status: "done", result: "ok" })]))),
+    )
+    expect(started).toEqual([{ subtaskId: "s1", description: "D", parentId: undefined, depth: undefined }])
+  })
+
+  test("a repeated identical malformed decompose call gets the sharpened repeat message, not the bland one again", async () => {
+    const requests: Array<LLMRequest> = []
+    const { calls, runner } = makeToolRunner([])
+    const result = await Effect.runPromise(
+      WorkerExecutor.run({
+        model: fakeModel,
+        task: "T",
+        subtask: { id: "s1", description: "D" },
+        tools: runner,
+        maxSteps: 3,
+      }).pipe(
+        Effect.provide(
+          fakeClient(
+            [
+              toolCallOf("decompose", { subtasks: [{ description: "only one" }] }),
+              // Byte-identical malformed decompose call again.
+              toolCallOf("decompose", { subtasks: [{ description: "only one" }] }),
+              toolCallOf("finish", { status: "done", result: "answer" }),
+            ],
+            requests,
+          ),
+        ),
+      ),
+    )
+    expect(result).toEqual({ subtaskId: "s1", status: "done", result: "answer" })
+    expect(calls.length).toBe(0)
+    // The 3rd request's packet is built from the observations accumulated after both
+    // rejected decompose attempts -- it must contain the sharpened repeat wording, not
+    // just the generic "needs 2-4 subtasks" rejection twice over.
+    expect(requests).toHaveLength(3)
+    const packet = latestPromptText(requests[2]!)
+    expect(packet).toContain("exact same decompose call")
+    expect(packet.toLowerCase()).toContain("finish")
+  })
+
+  test("parentContext appears in the context packet handed to the model", async () => {
+    const requests: Array<LLMRequest> = []
+    const { runner } = makeToolRunner([])
+    await Effect.runPromise(
+      WorkerExecutor.run({
+        model: fakeModel,
+        task: "T",
+        subtask: { id: "s1.1", description: "D" },
+        tools: runner,
+        parentContext: "Parent subtask: broad thing",
+      }).pipe(Effect.provide(fakeClient([toolCallOf("finish", { status: "done", result: "ok" })], requests))),
+    )
+    expect(requests).toHaveLength(1)
+    expect(latestPromptText(requests[0]!)).toContain("Parent subtask: broad thing")
   })
 })

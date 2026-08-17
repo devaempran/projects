@@ -58,4 +58,26 @@ describe("orchestrator events", () => {
     expect(encoded.data.durationMs).toBe(500)
     expect(encoded.data.usage.total).toBe(120)
   })
+
+  test("a subtask-decomposed event encodes through the SSE OpenCodeEvent schema", () => {
+    const encoded = Schema.encodeUnknownSync(OpenCodeEvent)({
+      id: "evt_test",
+      type: "session.next.orchestrator.subtask.decomposed" as const,
+      data: {
+        sessionID: "ses_test",
+        timestamp: DateTime.makeUnsafe(0),
+        subtaskId: "s1",
+        children: [
+          { id: "s1.1", description: "first slice", dependsOn: [], parentId: "s1", depth: 1 },
+          { id: "s1.2", description: "second slice", dependsOn: [] },
+        ],
+      },
+    }) as {
+      data: { subtaskId: string; children: ReadonlyArray<{ id: string; parentId?: string; depth?: number }> }
+    }
+    expect(encoded.data.subtaskId).toBe("s1")
+    expect(encoded.data.children[0].id).toBe("s1.1")
+    expect(encoded.data.children[0].parentId).toBe("s1")
+    expect(encoded.data.children[0].depth).toBe(1)
+  })
 })

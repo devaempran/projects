@@ -270,6 +270,20 @@ const layer = Layer.effect(
             emitOrchestrator((base) => events.publish(OrchestratorEvent.IterationStarted, { ...base, ...data })),
           subtaskStarted: (data) =>
             emitOrchestrator((base) => events.publish(OrchestratorEvent.SubtaskStarted, { ...base, ...data })),
+          subtaskDecomposed: (data) =>
+            emitOrchestrator((base) =>
+              events.publish(OrchestratorEvent.SubtaskDecomposed, {
+                ...base,
+                subtaskId: data.subtaskId,
+                children: data.children.map((c) => ({
+                  id: c.id,
+                  description: c.description,
+                  dependsOn: [],
+                  parentId: data.subtaskId,
+                  depth: c.depth,
+                })),
+              }),
+            ),
           workerStep: (data) =>
             emitOrchestrator((base) => events.publish(OrchestratorEvent.WorkerStep, { ...base, ...data })),
           observation: (data) =>
@@ -321,6 +335,8 @@ const layer = Layer.effect(
           assistantMessageID,
           emit: emitText,
           maxIterations: orchestratorConfig?.maxIterations,
+          maxStepsPerWorker: orchestratorConfig?.maxStepsPerWorker,
+          maxDecomposeDepth: orchestratorConfig?.maxDecomposeDepth,
           observer: orchestratorObserver,
         }).pipe(
           // runLive requires the LLM client and orchestrator state; both are provided to this layer

@@ -25,6 +25,17 @@ export interface Interface {
   readonly subtaskStarted: (data: {
     readonly subtaskId: string
     readonly description: string
+    // Set only for a child node minted by a `decompose` call, so a client attaching
+    // mid-run can place the node correctly in the tree without waiting for a
+    // `subtaskDecomposed` event it may have missed.
+    readonly parentId?: string
+    readonly depth?: number
+  }) => Effect.Effect<void>
+  // Emitted when a worker chose to split its subtask; the parent makes no further LLM
+  // calls and produces no result of its own.
+  readonly subtaskDecomposed: (data: {
+    readonly subtaskId: string
+    readonly children: ReadonlyArray<{ readonly id: string; readonly description: string; readonly depth: number }>
   }) => Effect.Effect<void>
   readonly workerStep: (data: {
     readonly subtaskId: string
@@ -89,6 +100,7 @@ export const noop: Interface = {
   planned: () => Effect.void,
   iterationStarted: () => Effect.void,
   subtaskStarted: () => Effect.void,
+  subtaskDecomposed: () => Effect.void,
   workerStep: () => Effect.void,
   observation: () => Effect.void,
   subtaskFinished: () => Effect.void,

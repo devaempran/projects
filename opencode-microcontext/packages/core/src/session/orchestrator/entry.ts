@@ -55,6 +55,7 @@ export interface RunLiveInput {
   readonly emit: (text: string) => Effect.Effect<void>
   readonly maxIterations?: number
   readonly maxStepsPerWorker?: number
+  readonly maxDecomposeDepth?: number
   readonly observer?: OrchestratorObserver.Interface
 }
 
@@ -83,6 +84,7 @@ export const runLive = (
       toolCatalog,
       maxIterations: input.maxIterations,
       maxStepsPerWorker: input.maxStepsPerWorker,
+      maxDecomposeDepth: input.maxDecomposeDepth,
       observer: input.observer,
     })
     yield* input.emit(render(result))

@@ -8,17 +8,27 @@ import { OrchestratorObserver } from "./observer"
 import { LlmReport } from "./llm-report"
 
 const FINISH_TOOL_NAME = "finish"
+const DECOMPOSE_TOOL_NAME = "decompose"
+const MAX_DECOMPOSE_CHILDREN = 4
+const MIN_DECOMPOSE_CHILDREN = 2
 
 const FINISH_TOOL_DESCRIPTION =
   'Call this when the subtask is complete or cannot proceed. Set `result` to a concise summary. Use `status: "done"` once you have an answer -- a confirmed negative result (e.g. "no LICENSE file exists in this repo") is a complete, valid answer, not a reason to keep searching. Use `status: "failed"` only when you could not investigate enough to reach any conclusion.'
+
+const DECOMPOSE_TOOL_DESCRIPTION =
+  "Call this ONLY when the subtask is genuinely too broad to investigate in the remaining steps. Split it into 2-4 smaller, independent, concrete slices that together fully cover it -- each slice runs with its own fresh context and its own step budget. Do not use it for a subtask a single tool call could satisfy."
 
 // Every catalog tool gets a permissive schema — the real ToolRegistry adapter that will
 // carry per-tool parameter shapes lands in a later stage; `ToolRunner.run` already takes
 // `input: unknown`, so this loses nothing today.
 const PERMISSIVE_INPUT_SCHEMA = { type: "object" } as const
 
-/** Build the real, directly-callable tool set for one worker step: the task's tool catalog plus `finish`. */
-const buildToolDefinitions = (toolCatalog: ReadonlyArray<ContextBuilder.ToolCatalogEntry> | undefined) => {
+/** Build the real, directly-callable tool set for one worker step: the task's tool catalog
+ * plus `finish` and (when `canDecompose`) `decompose`. */
+const buildToolDefinitions = (
+  toolCatalog: ReadonlyArray<ContextBuilder.ToolCatalogEntry> | undefined,
+  canDecompose: boolean,
+) => {
   const tools: Record<string, ReturnType<typeof Tool.make>> = {}
   for (const entry of toolCatalog ?? []) {
     tools[entry.name] = Tool.make({
@@ -39,13 +49,41 @@ const buildToolDefinitions = (toolCatalog: ReadonlyArray<ContextBuilder.ToolCata
     },
     execute: () => Effect.void,
   })
+  if (canDecompose) {
+    tools[DECOMPOSE_TOOL_NAME] = Tool.make({
+      description: DECOMPOSE_TOOL_DESCRIPTION,
+      jsonSchema: {
+        type: "object",
+        properties: {
+          subtasks: {
+            type: "array",
+            minItems: MIN_DECOMPOSE_CHILDREN,
+            maxItems: MAX_DECOMPOSE_CHILDREN,
+            items: {
+              type: "object",
+              properties: { description: { type: "string" } },
+              required: ["description"],
+            },
+          },
+        },
+        required: ["subtasks"],
+      },
+      execute: () => Effect.void,
+    })
+  }
   return toDefinitions(tools)
 }
 
+export const DecomposeChild = Schema.Struct({ description: Schema.String })
+export type DecomposeChild = typeof DecomposeChild.Type
+
 export const WorkerResult = Schema.Struct({
   subtaskId: Schema.String,
-  status: Schema.Literals(["done", "failed"]),
+  status: Schema.Literals(["done", "failed", "decomposed"]),
   result: Schema.String,
+  // present only when status === "decomposed": the child slices the model asked for,
+  // description-only. Child ids are minted by the runner, never by the model.
+  children: Schema.Array(DecomposeChild).pipe(Schema.optional),
 })
 export type WorkerResult = typeof WorkerResult.Type
 
@@ -84,6 +122,16 @@ export interface RunInput {
   readonly toolCatalog?: ReadonlyArray<ContextBuilder.ToolCatalogEntry>
   readonly maxSteps?: number
   readonly observer?: OrchestratorObserver.Interface
+  /** This node's nesting depth. Top-level (planner-produced) subtasks are depth 0. */
+  readonly depth?: number
+  /** Set when this subtask is a child minted by a parent's `decompose` call -- the
+   * parent subtask's id, forwarded to `observer.subtaskStarted` so a client attaching
+   * mid-run can place this node in the tree. */
+  readonly parentId?: string
+  /** A node at `depth >= maxDecomposeDepth` does not get `decompose` in its tool catalog at all. Default 1; 0 disables `decompose` entirely. */
+  readonly maxDecomposeDepth?: number
+  /** Set when this subtask is a child produced by a parent's `decompose` call — the parent's description, for the lineage line. */
+  readonly parentContext?: string
 }
 
 export const run = (input: RunInput): Effect.Effect<WorkerResult, LLMError, LLMClientService> =>
@@ -91,19 +139,29 @@ export const run = (input: RunInput): Effect.Effect<WorkerResult, LLMError, LLMC
     const maxSteps = input.maxSteps ?? 8
     const observer = input.observer ?? OrchestratorObserver.noop
     const observations: ContextBuilder.Observation[] = []
-    const toolDefinitions = buildToolDefinitions(input.toolCatalog)
+    const canDecompose = (input.depth ?? 0) < (input.maxDecomposeDepth ?? 1)
+    const toolDefinitions = buildToolDefinitions(input.toolCatalog, canDecompose)
     let lastCall: Call | undefined
-    const finish = (result: WorkerResult) =>
+    // `observer.subtaskFinished` keeps its "done" | "failed" meaning -- decompose is
+    // terminal and reported separately (by the runner, via `subtaskDecomposed`), so
+    // `finish` is only ever called with those two statuses, never "decomposed".
+    const finish = (result: { subtaskId: string; status: "done" | "failed"; result: string }): Effect.Effect<WorkerResult> =>
       observer
         .subtaskFinished({ subtaskId: result.subtaskId, status: result.status, result: result.result })
         .pipe(Effect.as(result))
-    yield* observer.subtaskStarted({ subtaskId: input.subtask.id, description: input.subtask.description })
+    yield* observer.subtaskStarted({
+      subtaskId: input.subtask.id,
+      description: input.subtask.description,
+      parentId: input.parentId,
+      depth: input.depth,
+    })
     for (let step = 1; step <= maxSteps; step++) {
       const packet = ContextBuilder.build({
         task: input.task,
         subtask: input.subtask,
         observations,
         tools: input.toolCatalog,
+        parentContext: input.parentContext,
       })
       yield* observer.workerStep({ subtaskId: input.subtask.id, step, contextPacket: packet })
       // A worker-side LLM.Error (e.g. the model exhausted its retries calling an unknown
@@ -137,6 +195,36 @@ export const run = (input: RunInput): Effect.Effect<WorkerResult, LLMError, LLMC
           status: finishInput.status === "failed" ? "failed" : "done",
           result: finishInput.result ?? "",
         })
+      }
+      if (decision.name === DECOMPOSE_TOOL_NAME) {
+        const decomposeInput = (decision.input ?? {}) as { subtasks?: Array<{ description?: string }> }
+        const children: DecomposeChild[] = (decomposeInput.subtasks ?? [])
+          .map((s) => (typeof s?.description === "string" ? s.description.trim() : ""))
+          .filter((description) => description.length > 0)
+          .slice(0, MAX_DECOMPOSE_CHILDREN)
+          .map((description) => ({ description }))
+        if (children.length < MIN_DECOMPOSE_CHILDREN) {
+          // Participate in the same repeated-identical-call guardrail as tool calls
+          // (below): a malformed `decompose` is otherwise exempt from it, so a model that
+          // keeps emitting the exact same malformed call gets the same bland rejection
+          // every step and burns its whole `maxSteps` budget without ever being nudged.
+          const call: Call = { tool: DECOMPOSE_TOOL_NAME, input: decision.input }
+          const isRepeat = lastCall !== undefined && sameCall(lastCall, call)
+          lastCall = call
+          const output = isRepeat
+            ? "(rejected) This is the exact same decompose call, with the exact same arguments, as your previous step -- it was rejected then and will be rejected again. Make a real tool call that makes progress, or call `finish` if you cannot proceed."
+            : `(rejected) decompose needs 2-4 subtasks, each with a non-empty description. Continue with a real tool call, or call finish.`
+          observations.push({ tool: DECOMPOSE_TOOL_NAME, output })
+          yield* observer.observation({ subtaskId: input.subtask.id, tool: DECOMPOSE_TOOL_NAME, output })
+          continue
+        }
+        const decomposed: WorkerResult = {
+          subtaskId: input.subtask.id,
+          status: "decomposed",
+          result: `Decomposed into ${children.length} subtasks`,
+          children,
+        }
+        return decomposed
       }
       // tool action
       const tool = decision.name

@@ -18,6 +18,10 @@ export interface BuildInput {
   readonly subtask: { readonly id: string; readonly description: string }
   readonly observations: ReadonlyArray<Observation>
   readonly tools?: ReadonlyArray<ToolCatalogEntry>
+  /** Set when this subtask is a child produced by a parent's `decompose` call — one line
+   *  of lineage ("Parent subtask: <parent description>. Your slice: <child description>")
+   *  so the child gets a fresh, tightly-scoped context instead of inherited history. */
+  readonly parentContext?: string
 }
 
 // Tool results are unbounded in principle (a `glob`/`grep`/`read` call can return
@@ -70,6 +74,7 @@ export const build = (input: BuildInput): string => {
   return [
     `Overall task:\n${input.task}`,
     `Your subtask (${input.subtask.id}):\n${input.subtask.description}`,
+    ...(input.parentContext !== undefined ? [`Parent subtask (yours is one slice of it):\n${input.parentContext}`] : []),
     `Available tools (call one of these by name):\n${tools}`,
     `Observations so far:\n${observations}`,
     `Decide the next action. Call one of the available tools to gather info or make progress, or call finish when the subtask is complete.`,
