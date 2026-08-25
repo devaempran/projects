@@ -7,11 +7,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Pin the server to a known host/port so the orchestrator URL is stable.
 # Without --port the TUI uses an internal worker transport that a browser
 # can't reach, so we bind a real HTTP server here.
+# NOTE: this binds IPv4 only. Browsers on Windows resolve "localhost" to ::1 (IPv6) first,
+# and nothing is listening there -- http://localhost:7654/orchestrator will show
+# connection-refused while http://127.0.0.1:7654/orchestrator works. Always use the URL this
+# script prints below. Set OPENCODE_HOST=0.0.0.0 if you need it reachable on both stacks.
 HOST="${OPENCODE_HOST:-127.0.0.1}"
 PORT="${OPENCODE_PORT:-7654}"
 
-# Local qwen3-coder model served via Ollama (registered in ~/.config/opencode/opencode.jsonc).
-MODEL="${OPENCODE_MODEL:-ollama/qwen3-coder:latest}"
+# Local qwen3.8:27b model served via Ollama (registered in ~/.config/opencode/opencode.jsonc).
+MODEL="${OPENCODE_MODEL:-ollama/qwen3.8:27b}"
 
 ORCH_URL="http://${HOST}:${PORT}/orchestrator"
 if [ -n "$OPENCODE_SERVER_PASSWORD" ]; then

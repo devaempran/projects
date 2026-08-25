@@ -290,3 +290,248 @@ describe("orchestrator-ui client event handler", () => {
     expect([...after.calls.values()].some((c: any) => c.status === "running")).toBe(false)
   })
 })
+
+describe("orchestrator-ui pipeline: queue / active / finished", () => {
+  test("the page renders the three pipeline lanes and a separate decomposition tree", async () => {
+    const response = await request("/orchestrator")
+    const body = await response.text()
+    // The queue used to be something you inferred from badge colors in a single tree; these
+    // three lanes plus a structure-only tree are the whole point of the layout.
+    expect(body).toContain("Queue · up next")
+    expect(body).toContain(".lane.queued")
+    expect(body).toContain(".lane.active")
+    expect(body).toContain(".lane.finished")
+    expect(body).toContain('"Nothing queued."')
+    expect(body).toContain('"Nothing finished yet."')
+    expect(body).toContain('id="tree"')
+    expect(body).toContain('case "queue.changed"')
+  })
+
+  test("queue.changed populates the queue in pop order and marks the popped subtask active", async () => {
+    const { handle, ensure } = await loadOrchestratorSandbox()
+    const sessionID = "sess-queue"
+
+    handle("session.next.orchestrator.plan.started", { sessionID, task: "t" })
+    handle("session.next.orchestrator.queue.changed", {
+      sessionID,
+      queue: [
+        { id: "s1", description: "first", depth: 0 },
+        { id: "s2", description: "second", depth: 0 },
+        { id: "s3", description: "third", depth: 0 },
+      ],
+      completed: 0,
+    })
+
+    let s = ensure(sessionID)
+    expect(s.queue.map((q: any) => q.id)).toEqual(["s1", "s2", "s3"])
+    expect(s.completed).toBe(0)
+    // Every queued entry is materialized so a client attaching mid-run can show descriptions
+    // for subtasks whose subtask.started it never received.
+    expect(s.subtasks.get("s1").description).toBe("first")
+
+    handle("session.next.orchestrator.queue.changed", {
+      sessionID,
+      queue: [
+        { id: "s2", description: "second", depth: 0 },
+        { id: "s3", description: "third", depth: 0 },
+      ],
+      active: "s1",
+      completed: 0,
+    })
+
+    s = ensure(sessionID)
+    expect(s.activeSubtaskId).toBe("s1")
+    expect(s.queue.map((q: any) => q.id)).toEqual(["s2", "s3"])
+  })
+
+  test("children pushed by a decompose appear ahead of the parent's own sibling", async () => {
+    const { handle, ensure } = await loadOrchestratorSandbox()
+    const sessionID = "sess-queue-dfs"
+
+    handle("session.next.orchestrator.plan.started", { sessionID, task: "t" })
+    handle("session.next.orchestrator.queue.changed", {
+      sessionID,
+      queue: [{ id: "s2", description: "sibling", depth: 0 }],
+      active: "s1",
+      completed: 0,
+    })
+    handle("session.next.orchestrator.subtask.decomposed", {
+      sessionID,
+      subtaskId: "s1",
+      children: [
+        { id: "s1.1", description: "slice one", parentId: "s1", depth: 1 },
+        { id: "s1.2", description: "slice two", parentId: "s1", depth: 1 },
+      ],
+    })
+    handle("session.next.orchestrator.queue.changed", {
+      sessionID,
+      queue: [
+        { id: "s1.1", description: "slice one", depth: 1, parentId: "s1" },
+        { id: "s1.2", description: "slice two", depth: 1, parentId: "s1" },
+        { id: "s2", description: "sibling", depth: 0 },
+      ],
+      completed: 0,
+    })
+
+    const s = ensure(sessionID)
+    // Depth-first: the children run before the parent's sibling.
+    expect(s.queue.map((q: any) => q.id)).toEqual(["s1.1", "s1.2", "s2"])
+    expect(s.queue[0].depth).toBe(1)
+    expect(s.subtasks.get("s1").children).toEqual(["s1.1", "s1.2"])
+  })
+
+  test("finished subtasks are tracked in completion order, not planner order", async () => {
+    const { handle, ensure } = await loadOrchestratorSandbox()
+    const sessionID = "sess-finished-order"
+
+    handle("session.next.orchestrator.plan.started", { sessionID, task: "t" })
+    handle("session.next.orchestrator.planned", {
+      sessionID,
+      subtasks: [
+        { id: "s1", description: "a", dependsOn: [] },
+        { id: "s2", description: "b", dependsOn: [] },
+      ],
+    })
+    handle("session.next.orchestrator.subtask.finished", { sessionID, subtaskId: "s2", status: "done", result: "b ok" })
+    handle("session.next.orchestrator.subtask.finished", { sessionID, subtaskId: "s1", status: "done", result: "a ok" })
+
+    expect(ensure(sessionID).finishedOrder).toEqual(["s2", "s1"])
+  })
+
+  test("a decomposed parent counts as finished -- it makes no further calls and yields no result", async () => {
+    const { handle, ensure } = await loadOrchestratorSandbox()
+    const sessionID = "sess-decomposed-finished"
+
+    handle("session.next.orchestrator.plan.started", { sessionID, task: "t" })
+    handle("session.next.orchestrator.subtask.decomposed", {
+      sessionID,
+      subtaskId: "s1",
+      children: [{ id: "s1.1", description: "c", parentId: "s1", depth: 1 }],
+    })
+    expect(ensure(sessionID).finishedOrder).toEqual(["s1"])
+  })
+})
+
+describe("orchestrator-ui: step budget readout", () => {
+  test("subtask.started records the announced budget, ceiling and whether it was estimated", async () => {
+    const { handle, ensure } = await loadOrchestratorSandbox()
+    const sessionID = "sess-budget"
+
+    handle("session.next.orchestrator.plan.started", { sessionID, task: "t" })
+    handle("session.next.orchestrator.subtask.started", {
+      sessionID,
+      subtaskId: "s1",
+      description: "d",
+      budget: 14,
+      hardCeiling: 24,
+      estimated: true,
+    })
+
+    const sub = ensure(sessionID).subtasks.get("s1")
+    expect(sub.budget).toBe(14)
+    expect(sub.hardCeiling).toBe(24)
+    expect(sub.estimated).toBe(true)
+  })
+
+  test("steps.extended raises the displayed budget and records why", async () => {
+    const { handle, ensure } = await loadOrchestratorSandbox()
+    const sessionID = "sess-extended"
+
+    handle("session.next.orchestrator.plan.started", { sessionID, task: "t" })
+    handle("session.next.orchestrator.subtask.started", { sessionID, subtaskId: "s1", description: "d", budget: 8 })
+    handle("session.next.orchestrator.worker.step", {
+      sessionID,
+      subtaskId: "s1",
+      step: 8,
+      contextPacket: "p",
+      budget: 8,
+    })
+    handle("session.next.orchestrator.steps.extended", {
+      sessionID,
+      subtaskId: "s1",
+      granted: 4,
+      budget: 12,
+      extensions: 1,
+      reason: "trace the remaining two callers",
+    })
+
+    const sub = ensure(sessionID).subtasks.get("s1")
+    expect(sub.budget).toBe(12)
+    expect(sub.extensions).toBe(1)
+    expect(sub.notes[0]).toContain("+4 steps granted (now 12)")
+    expect(sub.notes[0]).toContain("trace the remaining two callers")
+  })
+
+  test("no-progress and checkpoint events are surfaced on the subtask", async () => {
+    const { handle, ensure } = await loadOrchestratorSandbox()
+    const sessionID = "sess-stalled"
+
+    handle("session.next.orchestrator.plan.started", { sessionID, task: "t" })
+    handle("session.next.orchestrator.subtask.started", { sessionID, subtaskId: "s1", description: "d", budget: 20 })
+    handle("session.next.orchestrator.no-progress", { sessionID, subtaskId: "s1", stalledSteps: 3, step: 4 })
+    handle("session.next.orchestrator.checkpoint", {
+      sessionID,
+      subtaskId: "s1",
+      reason: "no-progress",
+      step: 4,
+      budget: 20,
+      extendable: false,
+    })
+
+    const sub = ensure(sessionID).subtasks.get("s1")
+    expect(sub.stalled).toEqual({ stalledSteps: 3, step: 4 })
+    // `extendable: false` is the visible evidence that a looping worker was refused more
+    // steps rather than allowed to grind on to its ceiling.
+    expect(sub.checkpoint).toEqual({ reason: "no-progress", extendable: false, step: 4 })
+  })
+
+  test("a partial finish is kept distinct from failed and carries its step accounting", async () => {
+    const { handle, ensure } = await loadOrchestratorSandbox()
+    const sessionID = "sess-partial"
+
+    handle("session.next.orchestrator.plan.started", { sessionID, task: "t" })
+    handle("session.next.orchestrator.subtask.started", { sessionID, subtaskId: "s1", description: "d", budget: 8 })
+    handle("session.next.orchestrator.subtask.finished", {
+      sessionID,
+      subtaskId: "s1",
+      status: "partial",
+      result: "found the entry point; ran out of steps before tracing callers",
+      steps: { used: 8, budget: 8, extensions: 0 },
+    })
+
+    const sub = ensure(sessionID).subtasks.get("s1")
+    expect(sub.status).toBe("partial")
+    expect(sub.stepsUsed).toBe(8)
+    expect(sub.result).toContain("found the entry point")
+    expect(ensure(sessionID).finishedOrder).toEqual(["s1"])
+  })
+
+  test("reusing a terminal subtask id also resets its budget bookkeeping", async () => {
+    const { handle, ensure } = await loadOrchestratorSandbox()
+    const sessionID = "sess-reuse-budget"
+
+    handle("session.next.orchestrator.plan.started", { sessionID, task: "t" })
+    handle("session.next.orchestrator.subtask.started", { sessionID, subtaskId: "s1", description: "first", budget: 8 })
+    handle("session.next.orchestrator.worker.step", { sessionID, subtaskId: "s1", step: 5, contextPacket: "p", budget: 8 })
+    handle("session.next.orchestrator.no-progress", { sessionID, subtaskId: "s1", stalledSteps: 3, step: 5 })
+    handle("session.next.orchestrator.subtask.finished", {
+      sessionID,
+      subtaskId: "s1",
+      status: "partial",
+      result: "r",
+      steps: { used: 5, budget: 8, extensions: 1 },
+    })
+
+    // A later iteration's verifier reuses "s1" for an unrelated subtask.
+    handle("session.next.orchestrator.subtask.started", { sessionID, subtaskId: "s1", description: "second", budget: 3 })
+
+    const sub = ensure(sessionID).subtasks.get("s1")
+    expect(sub.description).toBe("second")
+    expect(sub.budget).toBe(3)
+    expect(sub.lastStep).toBe(0)
+    expect(sub.extensions).toBe(0)
+    expect(sub.stepsUsed).toBeNull()
+    expect(sub.stalled).toBeNull()
+    expect(sub.notes).toEqual([])
+  })
+})

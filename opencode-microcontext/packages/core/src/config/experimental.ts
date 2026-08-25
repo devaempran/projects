@@ -16,10 +16,32 @@ export class Policy extends Schema.Class<Policy>("ConfigV2.Experimental.Policy")
 export class Orchestrator extends Schema.Class<Orchestrator>("ConfigV2.Experimental.Orchestrator")({
   enabled: Schema.Boolean.pipe(Schema.optional),
   maxIterations: Schema.Number.pipe(Schema.optional),
-  // Per-subtask worker step bound. Previously unreachable from config — the live seam
-  // (session/runner/llm.ts) never passed it through to `OrchestratorRunner.run`, so
-  // production always fell back to worker.ts's hardcoded default of 8.
+  // ---- worker step budget ------------------------------------------------------------
+  // The budget is three layers, not one number (see `session/orchestrator/budget.ts`):
+  // a soft budget the planner estimates per subtask and the worker can ask to extend, a
+  // progress gate that only grants an extension to a worker producing new information, and
+  // a flat hard ceiling nothing can raise. Setting `hardStepCeiling` equal to
+  // `maxStepsPerWorker` with `maxStepExtensions: 0` reproduces the old fixed-cap behaviour.
+  //
+  // Default soft budget, used for a subtask whose `estimatedSteps` the planner omitted.
+  // Default 8 — the value that used to be the flat cap for every subtask.
   maxStepsPerWorker: Schema.Number.pipe(Schema.optional),
+  // Floor a model-authored `estimatedSteps` is clamped up to, so a planner that estimates
+  // `1` for a real subtask can't strand a worker with too few steps to read one file and
+  // report on it. Default 3.
+  minStepsPerWorker: Schema.Number.pipe(Schema.optional),
+  // Absolute per-subtask step cap, extensions included. This is the actual infinite-loop
+  // backstop; every other bound is advisory. Default 24.
+  hardStepCeiling: Schema.Number.pipe(Schema.optional),
+  // How many times one worker may successfully call `request_steps`. Each grant is at most 8
+  // steps and is refused unless the worker produced new information since its last grant.
+  // Default 2; `0` disables worker-requested extensions entirely.
+  maxStepExtensions: Schema.Number.pipe(Schema.optional),
+  // Consecutive steps producing no new information (a repeated call, a repeated result, or an
+  // empty result) before a subtask is cut off regardless of remaining budget. This is what
+  // makes a raised ceiling safe, and it terminates a looping worker sooner than the old flat
+  // cap did. Default 3.
+  noProgressLimit: Schema.Number.pipe(Schema.optional),
   // Max recursion depth for worker self-decomposition (the `decompose` tool). A node at
   // `depth >= maxDecomposeDepth` does not get `decompose` in its tool catalog at all; `0`
   // disables the `decompose` tool entirely. Default is `1`.

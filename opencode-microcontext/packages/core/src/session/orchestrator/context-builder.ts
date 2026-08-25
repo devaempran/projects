@@ -22,6 +22,15 @@ export interface BuildInput {
    *  of lineage ("Parent subtask: <parent description>. Your slice: <child description>")
    *  so the child gets a fresh, tightly-scoped context instead of inherited history. */
   readonly parentContext?: string
+  /** Current step and the steps budgeted for this subtask. Surfaced to the model so it can
+   *  pace itself: with a flat, invisible cap the model had no way to know it was about to be
+   *  cut off, so it kept opening new lines of investigation right up to the last step and
+   *  never spent one consolidating. */
+  readonly budget?: { readonly step: number; readonly total: number }
+  /** A one-off instruction for this step only — the repetition/stall nudge, or the
+   *  wrap-up-or-request-more-steps checkpoint. Rendered last so it is the closest text to
+   *  the model's decision. */
+  readonly notice?: string
 }
 
 // Tool results are unbounded in principle (a `glob`/`grep`/`read` call can return
@@ -59,6 +68,17 @@ const renderObservations = (observations: ReadonlyArray<Observation>): string =>
 }
 
 /**
+ * The structural backstop for a synthesis subtask that the planner/verifier prompts failed to
+ * suppress. Observed failure: given "Synthesize the findings from s4-s6", the worker assumed
+ * s4-s6 must be files and spent all 8 steps on `glob **\/*s[5-8]*`, `glob **\/*findings*` and
+ * re-reading README/main.py, looking on disk for state that only exists in the orchestrator.
+ * Telling the worker plainly that sibling output is unreachable turns that from an 8-step
+ * dead end into a 1-step `finish`, which is also a far more useful signal to the Reducer.
+ */
+const ISOLATION_NOTE =
+  "Note: you are one of several independent subtasks. You cannot see any other subtask's results, and ids like `s2` or `t3` refer to sibling subtasks, NOT to files or directories — never search the filesystem for them. If this subtask asks you to synthesize, consolidate, or combine other subtasks' findings, that is not possible here and is handled automatically after all subtasks finish: call `finish` immediately, reporting only what you can establish from the codebase yourself."
+
+/**
  * Build a fresh, minimal prompt packet for one worker step. Deliberately small:
  * the overall task for orientation, THIS subtask, and only the observations
  * gathered so far this run. No conversation history.
@@ -75,8 +95,24 @@ export const build = (input: BuildInput): string => {
     `Overall task:\n${input.task}`,
     `Your subtask (${input.subtask.id}):\n${input.subtask.description}`,
     ...(input.parentContext !== undefined ? [`Parent subtask (yours is one slice of it):\n${input.parentContext}`] : []),
+    ...(input.budget !== undefined ? [renderBudget(input.budget)] : []),
     `Available tools (call one of these by name):\n${tools}`,
     `Observations so far:\n${observations}`,
+    ISOLATION_NOTE,
     `Decide the next action. Call one of the available tools to gather info or make progress, or call finish when the subtask is complete.`,
+    ...(input.notice !== undefined ? [input.notice] : []),
   ].join("\n\n")
+}
+
+/** One line telling the model where it is in its budget, plus an explicit consolidate
+ *  instruction on the final step so the step is spent on an answer rather than a new lead. */
+const renderBudget = (budget: { readonly step: number; readonly total: number }): string => {
+  const remaining = budget.total - budget.step
+  const pacing =
+    remaining <= 0
+      ? " This is your LAST step — call finish now with whatever you have."
+      : remaining === 1
+        ? " One step remains after this one; start consolidating."
+        : ""
+  return `Step ${budget.step} of ${budget.total} for this subtask.${pacing}`
 }

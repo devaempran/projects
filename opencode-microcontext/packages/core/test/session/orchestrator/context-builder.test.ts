@@ -85,3 +85,19 @@ describe("ContextBuilder", () => {
     expect(packet).not.toContain("0".repeat(100))
   })
 })
+
+describe("ContextBuilder isolation note", () => {
+  test("every packet tells the worker it cannot see sibling subtask results", () => {
+    // The structural backstop for a synthesis subtask that slipped past the planner prompt:
+    // without this, "Synthesize the findings from s4-s6" sent the worker hunting the
+    // filesystem for files named s4/s5/s6 for its whole step budget.
+    const packet = ContextBuilder.build({
+      task: "T",
+      subtask: { id: "s7", description: "Synthesize the findings from s4-s6 into one overview." },
+      observations: [],
+    })
+    expect(packet).toContain("cannot see any other subtask's results")
+    expect(packet).toContain("never search the filesystem for them")
+    expect(packet).toContain("call `finish` immediately")
+  })
+})

@@ -11,7 +11,7 @@ export const Reduction = Schema.Struct({ summary: Schema.String })
 export type Reduction = typeof Reduction.Type
 
 export const SYSTEM =
-  "You consolidate subtask results into a single concise, factual summary of what was accomplished and the current state of the task."
+  "You consolidate subtask results into a single concise, factual summary of what was accomplished and the current state of the task. Subtasks marked `partial` were cut off before finishing but their findings are real — use them, and say what remains unknown rather than dropping them. Cite file paths exactly as they appear in the subtask results; never reconstruct a path or module name from a class or symbol name. If no subtask established a fact, say so instead of inferring it."
 
 export const buildPrompt = (input: {
   readonly task: string

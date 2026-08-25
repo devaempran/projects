@@ -263,11 +263,30 @@ const layer = Layer.effect(
             emitOrchestrator((base) =>
               events.publish(OrchestratorEvent.Planned, {
                 ...base,
-                subtasks: data.subtasks.map((s) => ({ id: s.id, description: s.description, dependsOn: [...s.dependsOn] })),
+                subtasks: data.subtasks.map((s) => ({
+                  id: s.id,
+                  description: s.description,
+                  dependsOn: [...s.dependsOn],
+                  estimatedSteps: s.estimatedSteps,
+                })),
               }),
             ),
           iterationStarted: (data) =>
             emitOrchestrator((base) => events.publish(OrchestratorEvent.IterationStarted, { ...base, ...data })),
+          queueChanged: (data) =>
+            emitOrchestrator((base) =>
+              events.publish(OrchestratorEvent.QueueChanged, {
+                ...base,
+                queue: data.queue.map((q) => ({
+                  id: q.id,
+                  description: q.description,
+                  depth: q.depth,
+                  parentId: q.parentId,
+                })),
+                active: data.active,
+                completed: data.completed,
+              }),
+            ),
           subtaskStarted: (data) =>
             emitOrchestrator((base) => events.publish(OrchestratorEvent.SubtaskStarted, { ...base, ...data })),
           subtaskDecomposed: (data) =>
@@ -281,11 +300,18 @@ const layer = Layer.effect(
                   dependsOn: [],
                   parentId: data.subtaskId,
                   depth: c.depth,
+                  estimatedSteps: c.estimatedSteps,
                 })),
               }),
             ),
           workerStep: (data) =>
             emitOrchestrator((base) => events.publish(OrchestratorEvent.WorkerStep, { ...base, ...data })),
+          noProgressDetected: (data) =>
+            emitOrchestrator((base) => events.publish(OrchestratorEvent.NoProgressDetected, { ...base, ...data })),
+          checkpointReached: (data) =>
+            emitOrchestrator((base) => events.publish(OrchestratorEvent.CheckpointReached, { ...base, ...data })),
+          stepsExtended: (data) =>
+            emitOrchestrator((base) => events.publish(OrchestratorEvent.StepsExtended, { ...base, ...data })),
           observation: (data) =>
             emitOrchestrator((base) => events.publish(OrchestratorEvent.Observation, { ...base, ...data })),
           subtaskFinished: (data) =>
@@ -336,6 +362,10 @@ const layer = Layer.effect(
           emit: emitText,
           maxIterations: orchestratorConfig?.maxIterations,
           maxStepsPerWorker: orchestratorConfig?.maxStepsPerWorker,
+          minStepsPerWorker: orchestratorConfig?.minStepsPerWorker,
+          hardStepCeiling: orchestratorConfig?.hardStepCeiling,
+          maxStepExtensions: orchestratorConfig?.maxStepExtensions,
+          noProgressLimit: orchestratorConfig?.noProgressLimit,
           maxDecomposeDepth: orchestratorConfig?.maxDecomposeDepth,
           observer: orchestratorObserver,
         }).pipe(

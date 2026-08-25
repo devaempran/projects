@@ -21,6 +21,10 @@ export interface RunInput {
   readonly toolCatalog?: WorkerExecutor.RunInput["toolCatalog"]
   readonly maxIterations?: number
   readonly maxStepsPerWorker?: number
+  readonly minStepsPerWorker?: number
+  readonly hardStepCeiling?: number
+  readonly maxStepExtensions?: number
+  readonly noProgressLimit?: number
   readonly maxDecomposeDepth?: number
   readonly observer?: OrchestratorObserver.Interface
 }
@@ -77,6 +81,9 @@ export interface DecomposeNode {
   readonly id: string
   readonly description: string
   readonly dependsOn: ReadonlyArray<string>
+  /** Model-authored step estimate (planner, verifier, or a parent's `decompose`), unclamped.
+   *  `WorkerBudget.resolveLimits` is the single place that turns it into a real budget. */
+  readonly estimatedSteps?: number
 }
 
 /**
@@ -104,10 +111,15 @@ export const seedStack = (nodes: ReadonlyArray<DecomposeNode>): StackFrame[] =>
  * `MAX_CHILDREN_PER_DECOMPOSE` regardless of how many the model asked for. */
 export const mintChildFrames = (
   frame: StackFrame,
-  children: ReadonlyArray<{ readonly description: string }>,
+  children: ReadonlyArray<{ readonly description: string; readonly estimatedSteps?: number }>,
 ): StackFrame[] =>
   children.slice(0, MAX_CHILDREN_PER_DECOMPOSE).map((child, i) => ({
-    node: { id: `${frame.node.id}.${i + 1}`, description: child.description, dependsOn: [] },
+    node: {
+      id: `${frame.node.id}.${i + 1}`,
+      description: child.description,
+      dependsOn: [],
+      estimatedSteps: child.estimatedSteps,
+    },
     depth: frame.depth + 1,
     root: frame.root,
     parentId: frame.node.id,
@@ -234,12 +246,20 @@ export const run = (
     yield* observer.planStarted({ task: spec.task })
     const plan = yield* Planner.plan({ model: input.model, task: spec.task, observer })
     yield* observer.planned({
-      subtasks: plan.subtasks.map((s) => ({ id: s.id, description: s.description, dependsOn: s.dependsOn })),
+      subtasks: plan.subtasks.map((s) => ({
+        id: s.id,
+        description: s.description,
+        dependsOn: s.dependsOn,
+        estimatedSteps: s.estimatedSteps,
+      })),
     })
     let pending = TaskGraph.order(plan.subtasks)
     let iteration = 0
     let summary = ""
     let gaps: string[] = []
+    // Nodes that have reached a terminal state, across the whole run (not per iteration) —
+    // the "finished" count the live view shows next to the queue.
+    let completedNodes = 0
 
     while (true) {
       iteration++
@@ -258,7 +278,13 @@ export const run = (
       const snapshot = () => nodeOrder.map((id) => nodesById.get(id)!)
 
       for (const s of pending) {
-        setNode({ id: s.id, description: s.description, status: "pending", dependsOn: s.dependsOn })
+        setNode({
+          id: s.id,
+          description: s.description,
+          status: "pending",
+          dependsOn: s.dependsOn,
+          estimatedSteps: s.estimatedSteps,
+        })
       }
 
       yield* persist({ status: "working", iteration, subtasks: snapshot(), gaps })
@@ -271,6 +297,21 @@ export const run = (
       // each iteration's roots a fresh budget.
       const stack = seedStack(pending)
       const nodesUsed = new Map<string, number>()
+      // The DFS stack IS the queue the live view renders, so it is published on every change
+      // rather than reconstructed client-side by inferring an order from subtask statuses.
+      // `pop()` takes from the end, so pop order is the reversed array.
+      const emitQueue = (active?: string) =>
+        observer.queueChanged({
+          queue: [...stack].reverse().map((f) => ({
+            id: f.node.id,
+            description: f.node.description,
+            depth: f.depth,
+            parentId: f.parentId,
+          })),
+          active,
+          completed: completedNodes,
+        })
+      yield* emitQueue()
 
       while (stack.length > 0) {
         const frame = stack.pop()!
@@ -285,9 +326,12 @@ export const run = (
             parentId: frame.parentId,
             depth: frame.depth,
           })
+          completedNodes++
+          yield* emitQueue()
           continue
         }
         nodesUsed.set(frame.root, used + 1)
+        yield* emitQueue(frame.node.id)
 
         const r = yield* WorkerExecutor.run({
           model: input.model,
@@ -296,6 +340,11 @@ export const run = (
           tools: input.tools,
           toolCatalog: input.toolCatalog,
           maxSteps: input.maxStepsPerWorker,
+          minSteps: input.minStepsPerWorker,
+          hardStepCeiling: input.hardStepCeiling,
+          maxStepExtensions: input.maxStepExtensions,
+          noProgressLimit: input.noProgressLimit,
+          estimatedSteps: frame.node.estimatedSteps,
           depth: frame.depth,
           maxDecomposeDepth,
           parentId: frame.parentId,
@@ -312,6 +361,10 @@ export const run = (
             result: r.result,
             parentId: frame.parentId,
             depth: frame.depth,
+            estimatedSteps: frame.node.estimatedSteps,
+            stepsUsed: r.steps?.used,
+            stepBudget: r.steps?.budget,
+            stepExtensions: r.steps?.extensions,
           })
           const children = mintChildFrames(frame, r.children ?? [])
           for (const child of children) {
@@ -322,6 +375,7 @@ export const run = (
               dependsOn: child.node.dependsOn,
               parentId: child.parentId,
               depth: child.depth,
+              estimatedSteps: child.node.estimatedSteps,
             })
           }
           // Persist immediately, not just at the end of the iteration -- otherwise a UI
@@ -330,11 +384,17 @@ export const run = (
           yield* persist({ status: "working", iteration, subtasks: snapshot(), gaps })
           yield* observer.subtaskDecomposed({
             subtaskId: frame.node.id,
-            children: children.map((c) => ({ id: c.node.id, description: c.node.description, depth: c.depth })),
+            children: children.map((c) => ({
+              id: c.node.id,
+              description: c.node.description,
+              depth: c.depth,
+              estimatedSteps: c.node.estimatedSteps,
+            })),
           })
           // Push in reverse so child `.1` is the next frame popped (DFS: descend into the
           // first child before returning to this node's siblings).
           pushReversed(stack, children)
+          yield* emitQueue()
         } else {
           setNode({
             id: frame.node.id,
@@ -344,10 +404,18 @@ export const run = (
             result: r.result,
             parentId: frame.parentId,
             depth: frame.depth,
+            estimatedSteps: frame.node.estimatedSteps,
+            stepsUsed: r.steps?.used,
+            stepBudget: r.steps?.budget,
+            stepExtensions: r.steps?.extensions,
           })
           // The parent of a decomposed subtree contributes no result of its own -- only
-          // leaves (done/failed) feed the Reducer.
+          // leaves feed the Reducer. `partial` leaves are included deliberately: they are
+          // cut-off subtasks that still gathered real findings, and dropping those is exactly
+          // what made a step-exhausted run deliver nothing at all.
           results.push(r)
+          completedNodes++
+          yield* emitQueue()
         }
       }
 

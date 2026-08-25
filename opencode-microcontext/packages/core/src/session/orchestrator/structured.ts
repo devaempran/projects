@@ -62,7 +62,62 @@ export interface Options<S extends Schema.Top> {
   readonly topP?: number
   readonly retries?: number
   readonly reporter?: Reporter
+  /**
+   * Optional caller-supplied repair applied to the raw model output before decoding,
+   * after {@link stripNulls}.
+   *
+   * This exists for malformations that are specific to one schema and so don't belong in
+   * the generic cleaning pass. The motivating case: `qwen3.8:27b` returned the Verifier's
+   * `nextSubtasks` as a JSON *string* containing an array rather than an array, which the
+   * strict decode rejected and which cost a full extra verifier call to retry (observed in
+   * `llm-io` 20260823T224539Z, call 168 -> 170).
+   *
+   * Deliberately a hook rather than a looser schema: the JSON Schema handed to the model is
+   * what constrains Ollama's grammar decoder, so widening `nextSubtasks` to `Unknown` to
+   * absorb the string would remove the array constraint and make the failure *more* likely,
+   * not less. Repairing after the fact keeps the grammar tight and the leniency narrow.
+   */
+  readonly repair?: (raw: unknown) => unknown
 }
+
+/**
+ * If `value` is a string that parses as JSON, return the parsed value; otherwise return it
+ * unchanged. Scoped by the caller to specific fields — see `Options.repair` for why this is
+ * not applied blanket-wise to every string in the payload.
+ */
+export const parseJsonString = (value: unknown): unknown => {
+  if (typeof value !== "string") return value
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return value
+  const first = trimmed[0]
+  if (first !== "[" && first !== "{") return value
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    // Not valid JSON after all — hand the original string to the decoder so the error the
+    // caller sees describes the real field, not a parse failure in here.
+    return value
+  }
+}
+
+/** Build a `repair` that JSON-parses the named top-level keys when they arrive as strings. */
+export const repairJsonStringKeys =
+  (...keys: ReadonlyArray<string>) =>
+  (raw: unknown): unknown => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return raw
+    const record = raw as Record<string, unknown>
+    let changed = false
+    const result: Record<string, unknown> = { ...record }
+    for (const key of keys) {
+      if (!(key in record)) continue
+      const repaired = parseJsonString(record[key])
+      if (repaired !== record[key]) {
+        result[key] = repaired
+        changed = true
+      }
+    }
+    return changed ? result : raw
+  }
 
 /** Fire a reporter event without letting a reporter failure break the main flow. */
 const report = (reporter: Reporter | undefined, event: ReporterEvent) =>
@@ -127,7 +182,9 @@ export const object = <S extends Schema.Top>(
           usage: response.usage,
           finishReason: response.response.finishReason,
         })
-        return yield* decode(stripNulls(response.object)).pipe(
+        const cleaned = stripNulls(response.object)
+        const repaired = options.repair === undefined ? cleaned : options.repair(cleaned)
+        return yield* decode(repaired).pipe(
           Effect.mapError(
             (error) =>
               new LLMError({

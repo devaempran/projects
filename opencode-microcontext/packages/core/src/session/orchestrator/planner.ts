@@ -11,6 +11,10 @@ export const PlanSubtask = Schema.Struct({
   description: Schema.String,
   // Small local models routinely omit an empty dependsOn instead of emitting `[]`.
   dependsOn: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  // The planner's step estimate for this subtask. Optional throughout: a model that omits it
+  // (or emits something unusable) falls back to the configured default, so the field can only
+  // improve on the previous flat budget, never regress below it.
+  estimatedSteps: Schema.Number.pipe(Schema.optional),
 })
 export type PlanSubtask = typeof PlanSubtask.Type
 
@@ -29,6 +33,7 @@ export const PlanSubtaskRaw = Schema.Struct({
   id: Schema.Number,
   description: Schema.String,
   dependsOn: Schema.Array(Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  estimatedSteps: Schema.Number.pipe(Schema.optional),
 })
 export type PlanSubtaskRaw = typeof PlanSubtaskRaw.Type
 
@@ -40,8 +45,20 @@ export type PlanRaw = typeof PlanRaw.Type
 // read/modify/save subtasks, producing a doubled comment and wasted subtasks. `write`,
 // `edit`, and `apply_patch` already read, modify, and save in one call, so splitting them
 // only adds noise.
+// `estimatedSteps` replaces a flat, scope-blind step cap that gave "produce a high-level code
+// flow overview of this codebase" and "check whether a LICENSE file exists" the same 8 tool
+// calls. The planner is the only stage that knows a subtask's breadth at the time it is
+// created, so it is the right place to size it. The anchors are concrete because a bare
+// "estimate the steps" instruction gets a constant back from a small local model.
+// The "no synthesis subtask" rule fixes the dominant waste in llm-io 20260823T224539Z: the
+// planner emitted "Synthesize a high-level code flow overview summarizing the architecture…"
+// as subtask s3, and the verifier reproduced the same shape as s7 and s11. A worker runs
+// alone with a fresh context and cannot see sibling results, so those subtasks spent their
+// entire budget searching the filesystem for the orchestrator's own bookkeeping
+// (`glob **/*s[5-8]*`, `glob **/*findings*`) before failing. Consolidation is the Reducer's
+// job by construction, so the correct number of synthesis subtasks is always zero.
 export const SYSTEM =
-  "You are a planner for a small-context coding agent. Decompose the task into the smallest set of independent, concrete subtasks. Give each subtask a numeric id (1, 2, 3, …), a one-sentence description, and list the ids it depends on in dependsOn (empty if none). Prefer few subtasks; avoid overlap. A single file creation or edit that one write, edit, or apply_patch call can accomplish is exactly one subtask — never split a file mutation into separate read/modify/save steps; those tools already read, modify, and save in one call."
+  "You are a planner for a small-context coding agent. Decompose the task into the smallest set of independent, concrete subtasks. Give each subtask a numeric id (1, 2, 3, …), a one-sentence description, and list the ids it depends on in dependsOn (empty if none). Prefer few subtasks; avoid overlap. A single file creation or edit that one write, edit, or apply_patch call can accomplish is exactly one subtask — never split a file mutation into separate read/modify/save steps; those tools already read, modify, and save in one call. Every subtask must be answerable on its own from the codebase: never create a subtask whose job is to synthesize, consolidate, summarize, combine, or write up the results of the other subtasks, and never mention another subtask by its id in a description — each worker runs with a fresh context and cannot see any other subtask's output, and their results are consolidated automatically after all subtasks finish. Also set estimatedSteps: how many tool calls a worker needs to finish that subtask on its own. Use 2-3 for reading or editing one known file, 5-8 for finding something whose location is unknown, and 10-16 for surveying many files or tracing behaviour across a codebase. Estimate honestly — a worker that runs out of steps is cut off, and one given too many wastes the run's budget."
 
 /** Pure prompt builder — unit-testable without a model. */
 export const buildPrompt = (task: string): string =>
@@ -69,7 +86,18 @@ export const normalize = (raw: PlanRaw): Plan => {
         seen.add(mapped)
         dependsOn.push(mapped)
       }
-      return { id: `s${index + 1}`, description: subtask.description, dependsOn }
+      return {
+        id: `s${index + 1}`,
+        description: subtask.description,
+        dependsOn,
+        // Carried through raw and unclamped; `WorkerBudget.resolveLimits` owns the clamping so
+        // there is exactly one place that decides what a budget may be, wherever the estimate
+        // came from (planner, verifier, or a parent's `decompose`).
+        estimatedSteps:
+          typeof subtask.estimatedSteps === "number" && Number.isFinite(subtask.estimatedSteps)
+            ? subtask.estimatedSteps
+            : undefined,
+      }
     }),
   }
 }
@@ -113,6 +141,9 @@ const fetchRawPlan = (
         prompt: buildPrompt(input.task),
         maxTokens: input.maxTokens,
         retries: input.retries,
+        // Same string-instead-of-array malformation seen on the verifier's `nextSubtasks`;
+        // guard the planner's equivalent field before it costs a retry here too.
+        repair: OrchestratorStructured.repairJsonStringKeys("subtasks"),
         reporter: LlmReport.reporterFor(observer, { role: "planner", model: input.model }),
       })
       issue = validateRaw(raw)

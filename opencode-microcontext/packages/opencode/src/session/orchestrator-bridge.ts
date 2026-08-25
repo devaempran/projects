@@ -67,11 +67,18 @@ type LlmFinishData = Parameters<SessionOrchestrator.OrchestratorObserver.Interfa
 // sessionID, because ids land in a single process-wide JSONL file
 // (io-log.ts) that concurrent orchestrator runs across different sessions
 // all append to.
-function llmCallTracker(sessionID: string) {
+//
+// `runID` is part of the prefix, not just `sessionID`. The per-tuple `seq` counter only
+// disambiguates within one tracker, and a tracker is created per run -- so two turns in the
+// SAME session produced byte-identical ids (llm-io 20260823T224539Z: 133 unique ids for 210
+// calls). Anything joining request to response on that id silently attributes the second
+// turn's responses to the first turn's requests, which is exactly wrong in the direction
+// that makes a trace look self-consistent.
+function llmCallTracker(sessionID: string, runID: string) {
   const open = new Map<string, string>()
   const seq = new Map<string, number>()
   const key = (d: Pick<LlmStartData, "role" | "subtaskId" | "step" | "iteration" | "attempt">) =>
-    `${sessionID}:${d.role}:${d.subtaskId ?? "-"}:${d.step ?? "-"}:${d.iteration ?? "-"}:${d.attempt}`
+    `${sessionID}:${runID}:${d.role}:${d.subtaskId ?? "-"}:${d.step ?? "-"}:${d.iteration ?? "-"}:${d.attempt}`
   return {
     start(d: Pick<LlmStartData, "role" | "subtaskId" | "step" | "iteration" | "attempt">) {
       const k = key(d)
@@ -236,7 +243,10 @@ const layer = Layer.effect(
               "",
             ].join("\n"),
           )
-          const llmCalls = llmCallTracker(input.sessionID)
+          // Created up front rather than inline at the `runLive` call so it can also serve as
+          // the run-unique component of the llm-io correlation id.
+          const assistantMessageID = SessionMessage.ID.create()
+          const llmCalls = llmCallTracker(input.sessionID, assistantMessageID)
           const ORCHESTRATOR_EVENT_TEXT_MAX_CHARS = 4000
           const truncateOrchestratorText = (value: string) =>
             value.length <= ORCHESTRATOR_EVENT_TEXT_MAX_CHARS
@@ -253,15 +263,53 @@ const layer = Layer.effect(
                     id: s.id,
                     description: s.description,
                     dependsOn: [...s.dependsOn],
+                    estimatedSteps: s.estimatedSteps,
                   })),
                 }),
               ),
             iterationStarted: (data) =>
               emitOrchestrator((base) => events.publish(OrchestratorEvent.IterationStarted, { ...base, ...data })),
+            queueChanged: (data) =>
+              emitOrchestrator((base) =>
+                events.publish(OrchestratorEvent.QueueChanged, {
+                  ...base,
+                  queue: data.queue.map((q) => ({
+                    id: q.id,
+                    description: q.description,
+                    depth: q.depth,
+                    parentId: q.parentId,
+                  })),
+                  active: data.active,
+                  completed: data.completed,
+                }),
+              ),
             subtaskStarted: (data) =>
               emitOrchestrator((base) => events.publish(OrchestratorEvent.SubtaskStarted, { ...base, ...data })),
+            // Added to the observer Interface by the recursive-decomposition change but never
+            // implemented on this seam, so no real run has ever emitted it.
+            subtaskDecomposed: (data) =>
+              emitOrchestrator((base) =>
+                events.publish(OrchestratorEvent.SubtaskDecomposed, {
+                  ...base,
+                  subtaskId: data.subtaskId,
+                  children: data.children.map((c) => ({
+                    id: c.id,
+                    description: c.description,
+                    dependsOn: [],
+                    parentId: data.subtaskId,
+                    depth: c.depth,
+                    estimatedSteps: c.estimatedSteps,
+                  })),
+                }),
+              ),
             workerStep: (data) =>
               emitOrchestrator((base) => events.publish(OrchestratorEvent.WorkerStep, { ...base, ...data })),
+            noProgressDetected: (data) =>
+              emitOrchestrator((base) => events.publish(OrchestratorEvent.NoProgressDetected, { ...base, ...data })),
+            checkpointReached: (data) =>
+              emitOrchestrator((base) => events.publish(OrchestratorEvent.CheckpointReached, { ...base, ...data })),
+            stepsExtended: (data) =>
+              emitOrchestrator((base) => events.publish(OrchestratorEvent.StepsExtended, { ...base, ...data })),
             observation: (data) =>
               emitOrchestrator((base) => events.publish(OrchestratorEvent.Observation, { ...base, ...data })),
             subtaskFinished: (data) =>
@@ -342,9 +390,20 @@ const layer = Layer.effect(
             model,
             prompt: input.prompt,
             materialization,
-            assistantMessageID: SessionMessage.ID.create(),
+            assistantMessageID,
             emit: () => Effect.void,
             maxIterations: orchestratorConfig?.maxIterations,
+            // Previously only `maxIterations` reached the live path, so every worker fell back
+            // to the hardcoded 8-step default and `decompose` was capped at its own default no
+            // matter what config said -- the stage-7 "config threading" fix landed on core's
+            // `runner/llm.ts` seam but not on this one, which is the seam the TUI/server
+            // actually runs through.
+            maxStepsPerWorker: orchestratorConfig?.maxStepsPerWorker,
+            minStepsPerWorker: orchestratorConfig?.minStepsPerWorker,
+            hardStepCeiling: orchestratorConfig?.hardStepCeiling,
+            maxStepExtensions: orchestratorConfig?.maxStepExtensions,
+            noProgressLimit: orchestratorConfig?.noProgressLimit,
+            maxDecomposeDepth: orchestratorConfig?.maxDecomposeDepth,
             observer,
           }).pipe(
             Effect.provideService(LLMClient.Service, llm),
