@@ -10,8 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST="${OPENCODE_HOST:-127.0.0.1}"
 PORT="${OPENCODE_PORT:-7654}"
 
-# Local qwen3-coder model served via Ollama (registered in ~/.config/opencode/opencode.jsonc).
-MODEL="${OPENCODE_MODEL:-ollama/qwen3-coder:latest}"
+# Local qwen3.8:27b model served via Ollama (registered in ~/.config/opencode/opencode.jsonc,
+# with a 24k context window — see limit.context there).
+MODEL="${OPENCODE_MODEL:-ollama/qwen3.8:27b}"
 
 ORCH_URL="http://${HOST}:${PORT}/orchestrator"
 if [ -n "$OPENCODE_SERVER_PASSWORD" ]; then

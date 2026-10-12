@@ -15,8 +15,9 @@ fi
 PROJECT_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Local qwen3-coder model served via Ollama (registered in ~/.config/opencode/opencode.jsonc).
-MODEL="${OPENCODE_MODEL:-ollama/qwen3-coder:latest}"
+# Local qwen3.8:27b model served via Ollama (registered in ~/.config/opencode/opencode.jsonc,
+# with a 24k context window — see limit.context there).
+MODEL="${OPENCODE_MODEL:-ollama/qwen3.8:27b}"
 
 # Full input/output logging for every LLM API call (see
 # packages/opencode/src/session/llm/io-log.ts). On by default for local dev;
