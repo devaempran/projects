@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>decisionLM — local MCQ scoring</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --border: #2a2e3a; --text: #e6e8ee;
+    --muted: #8a8f9e; --accent: #5b8cff; --good: #35c37a; --bad: #e0556f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    max-width: 880px; margin: 0 auto; padding: 32px 20px 80px;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+  textarea, input[type=text] {
+    width: 100%; background: #0d0f15; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px; font-size: 14px; font-family: inherit; resize: vertical;
+  }
+  textarea { min-height: 54px; }
+  .row { margin-bottom: 14px; }
+  .choice-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+  .choice-row input.label { width: 56px; text-align: center; font-weight: 600; }
+  .choice-row input.text { flex: 1; }
+  .choice-row button { background: none; border: none; color: var(--bad); cursor: pointer; font-size: 18px; padding: 0 6px; }
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button.primary {
+    background: var(--accent); color: white; border: none; border-radius: 6px;
+    padding: 10px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button.primary:disabled { opacity: 0.5; cursor: default; }
+  button.secondary {
+    background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    padding: 9px 14px; font-size: 13px; cursor: pointer;
+  }
+  .model-tag { font-size: 12px; color: var(--muted); }
+  .status { font-size: 12px; color: var(--muted); margin-left: auto; }
+  .status.active { color: var(--good); }
+  .status.inactive { color: var(--bad); }
+  .results-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .results-table td { padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: 14px; }
+  .bar-wrap { background: #0d0f15; border-radius: 4px; height: 20px; overflow: hidden; width: 100%; }
+  .bar { background: var(--accent); height: 100%; }
+  .winner-row { background: rgba(53, 195, 122, 0.08); }
+  .winner-row .label { color: var(--good); font-weight: 700; }
+  .pct { font-family: ui-monospace, monospace; font-size: 13px; color: var(--muted); width: 60px; text-align: right; }
+  .meta { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 14px; }
+  .meta b { color: var(--text); }
+  .error { background: rgba(224, 85, 111, 0.12); border: 1px solid var(--bad); color: #ffb3c0; padding: 12px; border-radius: 6px; font-size: 13px; white-space: pre-wrap; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+</style>
+</head>
+<body>
+  <h1>decisionLM</h1>
+  <div class="sub">Single-pass multiple-choice scoring via next-token logits — llama-cpp-python, local only, no cloud calls.</div>
+
+  <div class="panel">
+    <div class="toolbar" style="margin-bottom:14px;">
+      <span class="model-tag" id="modelTag">model: …</span>
+      <button class="secondary" id="loadBtn">Load model</button>
+      <span class="status" id="gpuStatus">checking…</span>
+    </div>
+
+    <div class="row">
+      <label>Context (optional)</label>
+      <textarea id="context" placeholder="e.g. James has a Tesla Model Y."></textarea>
+    </div>
+    <div class="row">
+      <label>Question</label>
+      <textarea id="question" placeholder="e.g. What is James's car's make and model?"></textarea>
+    </div>
+    <div class="row">
+      <label>Choices</label>
+      <div id="choices"></div>
+      <button class="secondary" id="addChoice" style="margin-top:4px;">+ Add choice</button>
+    </div>
+    <div class="toolbar">
+      <button class="primary" id="scoreBtn">Score</button>
+      <span class="status" id="scoreStatus"></span>
+    </div>
+  </div>
+
+  <div id="resultsPanel" class="panel" style="display:none;"></div>
+
+  <script>
+    const choicesEl = document.getElementById('choices');
+    // Letters are assigned by the server from row order; shown here for reference only.
+    const relabel = () => [...choicesEl.querySelectorAll('input.label')]
+      .forEach((el, i) => el.value = String.fromCharCode(65 + i));
+    function addChoiceRow(text = '') {
+      const row = document.createElement('div');
+      row.className = 'choice-row';
+      row.innerHTML = `
+        <input class="label" type="text" readonly>
+        <input class="text" type="text" placeholder="option text">
+        <button title="remove">×</button>`;
+      row.querySelector('input.text').value = text;
+      row.querySelector('button').onclick = () => { row.remove(); relabel(); };
+      choicesEl.appendChild(row);
+      relabel();
+    }
+    document.getElementById('addChoice').onclick = () => addChoiceRow();
+
+    // seed with the example from the spec
+    document.getElementById('context').value = "James has a Tesla Model Y.";
+    document.getElementById('question').value = "What is James's car's make and model?";
+    addChoiceRow('Tesla Model S');
+    addChoiceRow('Tesla Model Y');
+    addChoiceRow('Toyota Camry');
+
+    function renderGpu(gpu) {
+      const el = document.getElementById('gpuStatus');
+      if (!gpu || !gpu.loaded) {
+        el.textContent = 'model not loaded (click "Load model")';
+        el.className = 'status';
+        return;
+      }
+      if (gpu.supports_gpu_offload && gpu.gpu_memory) {
+        const usedGb = (gpu.gpu_memory.used_mb / 1024).toFixed(1);
+        const totalGb = (gpu.gpu_memory.total_mb / 1024).toFixed(1);
+        el.textContent = `GPU active — ${usedGb}/${totalGb} GB VRAM in use (all layers offloaded)`;
+        el.className = 'status active';
+      } else if (gpu.supports_gpu_offload) {
+        el.textContent = 'GPU-capable build, but no VRAM reading available';
+        el.className = 'status active';
+      } else {
+        el.textContent = 'GPU NOT active — llama-cpp-python built without CUDA support';
+        el.className = 'status inactive';
+      }
+    }
+
+    async function refreshHealth() {
+      document.getElementById('modelTag').textContent = '';
+      const r = await fetch('/api/health');
+      const d = await r.json();
+      document.getElementById('modelTag').textContent = `model: ${d.model}`;
+      renderGpu(d.gpu);
+    }
+
+    document.getElementById('loadBtn').onclick = async () => {
+      const btn = document.getElementById('loadBtn');
+      btn.disabled = true; btn.textContent = 'Loading…';
+      const r = await fetch('/api/warmup', { method: 'POST' });
+      const d = await r.json();
+      btn.disabled = false; btn.textContent = 'Load model';
+      if (d.error) { alert(d.error); return; }
+      document.getElementById('scoreStatus').textContent =
+        `Model load time: ${d.load_duration_s.toFixed(2)}s`;
+      refreshHealth();
+    };
+
+    document.getElementById('scoreBtn').onclick = async () => {
+      const btn = document.getElementById('scoreBtn');
+      const statusEl = document.getElementById('scoreStatus');
+      const panel = document.getElementById('resultsPanel');
+      const context = document.getElementById('context').value;
+      const question = document.getElementById('question').value;
+      const Options = [...choicesEl.querySelectorAll('.choice-row input.text')].map(i => i.value.trim());
+
+      btn.disabled = true; statusEl.textContent = 'Running one forward pass…';
+      panel.style.display = 'none';
+
+      try {
+        const r = await fetch('/api/score/detailed', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ Context: context, Question: question, Options }),
+        });
+        const d = await r.json();
+        btn.disabled = false;
+        if (d.error) {
+          statusEl.textContent = '';
+          panel.style.display = 'block';
+          panel.innerHTML = `<div class="error">${d.error}</div>`;
+          return;
+        }
+        statusEl.textContent = '';
+        renderResults(d);
+        refreshHealth();
+      } catch (e) {
+        btn.disabled = false;
+        statusEl.textContent = '';
+        panel.style.display = 'block';
+        panel.innerHTML = `<div class="error">Request failed: ${e}</div>`;
+      }
+    };
+
+    function renderResults(d) {
+      const panel = document.getElementById('resultsPanel');
+      panel.style.display = 'block';
+      const rows = d.choices.map(c => {
+        const pct = (c.probability * 100).toFixed(2);
+        const isWinner = c.label === d.winner;
+        return `
+          <tr class="${isWinner ? 'winner-row' : ''}">
+            <td class="label">${isWinner ? '★ ' : ''}${c.label}</td>
+            <td>${c.text}</td>
+            <td style="width:40%"><div class="bar-wrap"><div class="bar" style="width:${pct}%"></div></div></td>
+            <td class="pct">${pct}%</td>
+          </tr>`;
+      }).join('');
+
+      const flagPosition = !d.unconstrained_matches_a_label;
+
+      panel.innerHTML = `
+        <table class="results-table">${rows}</table>
+        <div class="meta">
+          <span><b>Winner:</b> ${d.winner}</span>
+          <span><b>Label probability mass (full vocab):</b> ${(d.total_label_probability_mass * 100).toFixed(2)}%</span>
+          <span><b>Eval time:</b> ${d.timing.eval_s.toFixed(3)}s (${d.timing.prompt_tokens} prompt tokens)</span>
+        </div>
+        ${flagPosition ? `<div class="hint">Note: unconstrained, the model's top next-token was "${d.unconstrained_top_token}", not one of the labels — probabilities above are conditional on the answer being one of the given choices, not the model's free-form preference.</div>` : ''}
+      `;
+    }
+
+    refreshHealth();
+  </script>
+</body>
+</html>

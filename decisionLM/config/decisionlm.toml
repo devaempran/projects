@@ -1,0 +1,28 @@
+# decisionLM configuration. Relative paths are relative to the project root.
+# Override the file with DECISIONLM_CONFIG=<path>. A few settings can also be overridden per process with
+# environment variables: PORT, DECIDE_THETA, MAX_THINK_TOKENS, MAX_THINK_SECONDS, MAX_BODY_BYTES.
+
+[model]
+path = "models/qwen3-8b-q8_0.gguf"
+label = "Qwen3-8B (Q8_0)"
+n_ctx = 8192                 # prompt + reasoner thinking must fit in this window
+n_gpu_layers = -1            # offload every layer that fits
+
+[scoring]                    # tier 1: one forward pass, read the option-letter logits
+calibration_file = "config/calibration.json"   # softmax temperature T, written by scripts/fit_temperature.py
+system_prompt = "You are a careful expert. Answer multiple-choice questions accurately."
+# Reuse the KV cache only when the shared prompt prefix is at least this many tokens (a real shared context).
+# A shorter prefix saves nothing and shifts the logits slightly (kernel numerics).
+min_prefix_reuse = 64
+
+[decide]                     # /api/decide: tier 1, escalating to the thinking reasoner (tier 2)
+theta = 0.85                 # escalate when tier-1 confidence is below this (a request can override it)
+min_label_mass = 0.5         # also escalate when the model put less mass than this on the option letters
+max_think_tokens = 6000      # reasoner thinking budget
+max_think_seconds = 150      # wall-clock cap per escalation (the server handles one request at a time)
+
+[server]
+host = "127.0.0.1"
+port = 5000
+threads = 1                  # must stay 1: a llama.cpp context is not thread-safe
+max_body_bytes = 1000000

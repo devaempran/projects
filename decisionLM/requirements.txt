@@ -1,0 +1,6 @@
+flask
+llama-cpp-python
+pandas
+pyarrow
+huggingface_hub
+waitress

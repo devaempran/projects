@@ -1,0 +1,263 @@
+"""
+Core scoring logic: one forward pass through a local GGUF model via
+llama-cpp-python, reading the next-token logits at the answer position
+instead of generating free text. No Ollama, no network calls.
+"""
+import json
+import math
+import os
+import subprocess
+import sys
+import tempfile
+import time
+
+from llama_cpp import Llama, llama_supports_gpu_offload
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "qwen3-8b-q4_k_m.gguf")
+MODEL_LABEL = "Qwen3-8B (Q4_K_M)"
+N_CTX = 4096
+N_GPU_LAYERS = -1  # offload every layer we can fit
+LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+CALIBRATION_PATH = os.path.join(os.path.dirname(__file__), "calibration.json")
+
+
+def _load_temperature():
+    """Softmax temperature T (>1 softens confidence). Fit by fit_temperature.py."""
+    try:
+        with open(CALIBRATION_PATH) as f:
+            return float(json.load(f)["temperature"])
+    except (OSError, KeyError, ValueError):
+        return 1.0
+
+
+TEMPERATURE = _load_temperature()
+
+_state = {"llm": None, "load_report": None}
+
+
+class ScoringError(Exception):
+    """Raised for any condition where we refuse to guess and must surface a clear error."""
+
+
+def _load_with_captured_output(fn):
+    """Run fn() while redirecting the process's stdout/stderr file descriptors
+    to a temp file, so we can capture llama.cpp's native (non-Python) log
+    lines — e.g. "offloaded N/M layers to GPU" — which bypass sys.stdout."""
+    out_fd, err_fd = sys.stdout.fileno(), sys.stderr.fileno()
+    saved_out, saved_err = os.dup(out_fd), os.dup(err_fd)
+    with tempfile.TemporaryFile(mode="w+b") as tmp:
+        os.dup2(tmp.fileno(), out_fd)
+        os.dup2(tmp.fileno(), err_fd)
+        try:
+            result = fn()
+        finally:
+            os.dup2(saved_out, out_fd)
+            os.dup2(saved_err, err_fd)
+            os.close(saved_out)
+            os.close(saved_err)
+        tmp.seek(0)
+        log = tmp.read().decode(errors="replace")
+    return result, log
+
+
+def _nvidia_smi_memory():
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+            timeout=5,
+        ).decode().strip()
+        used, total = (int(x.strip()) for x in out.split(","))
+        return {"used_mb": used, "total_mb": total}
+    except Exception:
+        return None
+
+
+def get_llm():
+    """Load the model once and keep it resident for the life of the process."""
+    if _state["llm"] is None:
+        if not os.path.exists(MODEL_PATH):
+            raise ScoringError(
+                f"Model file not found at {MODEL_PATH}. See README for how to fetch it."
+            )
+        t0 = time.time()
+
+        def _do_load():
+            return Llama(
+                model_path=MODEL_PATH,
+                n_gpu_layers=N_GPU_LAYERS,
+                n_ctx=N_CTX,
+                logits_all=True,  # required for per-position logprobs
+                verbose=True,
+            )
+
+        llm, log = _load_with_captured_output(_do_load)
+        load_s = time.time() - t0
+
+        offload_lines = [l for l in log.splitlines() if "offload" in l.lower()]
+        _state["llm"] = llm
+        _state["load_report"] = {
+            "load_duration_s": load_s,
+            "supports_gpu_offload": llama_supports_gpu_offload(),
+            "n_gpu_layers_requested": N_GPU_LAYERS,
+            "offload_log_lines": offload_lines,
+            "gpu_memory": _nvidia_smi_memory(),
+        }
+    return _state["llm"]
+
+
+def warmup():
+    """Explicitly trigger (or confirm) the model load and report timing/GPU info."""
+    get_llm()
+    return dict(_state["load_report"])
+
+
+def gpu_status():
+    if _state["llm"] is None:
+        return {"loaded": False}
+    report = dict(_state["load_report"])
+    report["loaded"] = True
+    return report
+
+
+def build_prompt(context, question, choices):
+    labels = [c["label"] for c in choices]
+    lines = []
+    if context and context.strip():
+        lines.append(f"Context: {context.strip()}\n")
+    lines.append(f"Question: {question.strip()}\n")
+    lines.append("Choices:")
+    for c in choices:
+        lines.append(f"{c['label']}: {c['text']}")
+    lines.append(
+        f"\nRespond with exactly one letter ({', '.join(labels)}) and nothing else. "
+        f"Do not explain your answer."
+    )
+    body = "\n".join(lines)
+    # ChatML with thinking explicitly disabled (Qwen3's documented way to skip
+    # its <think> reasoning block) so the very next generated token is the answer.
+    return (
+        f"<|im_start|>user\n{body}<|im_end|>\n"
+        f"<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    )
+
+
+def score_options(context, question, options):
+    """
+    Public-API entry point. options: list of plain option strings. Each is
+    assigned a letter (A, B, C, ...) for the LLM prompt; the letters are an
+    internal detail. Returns the full score() result, with choices in the same
+    order as `options`.
+    """
+    if not isinstance(options, list) or len(options) < 2:
+        raise ScoringError("Provide at least two options.")
+    if len(options) > len(LABELS):
+        raise ScoringError(f"At most {len(LABELS)} options are supported.")
+    if not all(isinstance(o, str) and o.strip() for o in options):
+        raise ScoringError("Every option must be a non-empty string.")
+    if len(set(options)) != len(options):
+        raise ScoringError("Options must be unique (they are used as output keys).")
+    choices = [{"label": l, "text": o} for l, o in zip(LABELS, options)]
+    return score(context, question, choices)
+
+
+def score(context, question, choices, top_logprobs_n=None):
+    """
+    choices: list of {"label": str, "text": str}
+    Returns a dict with per-choice probabilities, the winner, diagnostic info,
+    and timing. Raises ScoringError if any label can't be read as a single
+    token at the answer position.
+    """
+    if not choices or len(choices) < 2:
+        raise ScoringError("Provide at least two choices.")
+
+    labels = [c["label"] for c in choices]
+    if len(set(labels)) != len(labels):
+        raise ScoringError(f"Choice labels must be unique, got: {labels}")
+
+    if top_logprobs_n is None:
+        top_logprobs_n = max(len(labels) + 10, 30)
+
+    llm = get_llm()
+    prompt = build_prompt(context, question, choices)
+
+    t0 = time.time()
+    out = llm.create_completion(
+        prompt=prompt,
+        max_tokens=1,
+        temperature=0,       # deterministic; doesn't affect the logprobs field itself
+        logprobs=top_logprobs_n,
+        echo=False,
+    )
+    eval_s = time.time() - t0
+
+    top = out["choices"][0]["logprobs"]["top_logprobs"][0]  # {token_str: logprob}
+
+    # Match each requested label to exactly one token in the returned window.
+    # A token only counts as a match if, once stripped of surrounding
+    # whitespace, it equals the label exactly — i.e. it IS the label as a
+    # single token, not a longer token that merely starts with it.
+    matched = {}
+    unmatched = []
+    for label in labels:
+        candidates = [(tok, lp) for tok, lp in top.items() if tok.strip() == label]
+        if not candidates:
+            unmatched.append(label)
+            continue
+        bare = [c for c in candidates if c[0] == label]
+        matched[label] = (bare[0] if bare else candidates[0])
+
+    if unmatched:
+        seen_sorted = sorted(top.items(), key=lambda kv: -kv[1])
+        raise ScoringError(
+            f"Label(s) {unmatched} were not found as a single token in the model's "
+            f"top-{top_logprobs_n} predictions at the answer position, so no logit "
+            f"can be read for them. The model's actual top candidate tokens there "
+            f"were: {[t for t, _ in seen_sorted[:8]]}. Try shorter/simpler labels "
+            f"(e.g. single letters A, B, C) or rephrase the prompt so the model is "
+            f"clearly cued to answer with a label."
+        )
+
+    logprobs = {label: float(matched[label][1]) for label in labels}
+
+    # Softmax restricted to just the permitted labels (conditional probability
+    # given that the answer is one of these choices), with temperature scaling
+    # to correct the model's overconfidence. T doesn't change the winner.
+    max_lp = max(logprobs.values())
+    exps = {l: math.exp((lp - max_lp) / TEMPERATURE) for l, lp in logprobs.items()}
+    denom = sum(exps.values())
+    cond_probs = {l: exps[l] / denom for l in labels}
+
+    # Unconditional probability mass the FULL vocabulary distribution assigns
+    # to the permitted labels (no renormalization) — shows when the model
+    # would rather say something else entirely.
+    total_label_mass = sum(math.exp(lp) for lp in logprobs.values())
+
+    winner = max(cond_probs, key=cond_probs.get)
+
+    unconstrained_top = max(top.items(), key=lambda kv: kv[1])[0]
+    unconstrained_matches_a_label = unconstrained_top.strip() in labels
+
+    return {
+        "model": MODEL_LABEL,
+        "prompt": prompt,
+        "choices": [
+            {
+                "label": l,
+                "text": next(c["text"] for c in choices if c["label"] == l),
+                "logprob": logprobs[l],
+                "probability": cond_probs[l],
+            }
+            for l in labels
+        ],
+        "winner": winner,
+        "temperature": TEMPERATURE,
+        "total_label_probability_mass": total_label_mass,
+        "unconstrained_top_token": unconstrained_top,
+        "unconstrained_matches_a_label": unconstrained_matches_a_label,
+        "timing": {
+            "eval_s": eval_s,
+            "prompt_tokens": out.get("usage", {}).get("prompt_tokens"),
+        },
+        "gpu": gpu_status(),
+    }
