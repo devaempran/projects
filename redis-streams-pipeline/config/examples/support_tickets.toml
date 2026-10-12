@@ -1,0 +1,57 @@
+# WORKED EXAMPLE: routing customer-support tickets. Copy it over config/pipeline.toml, or point at it:
+#   PIPELINE_CONFIG=config/examples/support_tickets.toml python run.py decider decider-1
+# Event shape: XADD ingestion * id <ticket id> payload "<ticket text>" ts <unix time>
+
+[redis]
+host = "127.0.0.1"
+port = 6380              # 6379 is taken by trading_redis on this machine
+
+[ingestion]
+stream = "ingestion"     # the main topic: its events become the Context
+group = "deciders"
+dlq_stream = "ingestion:dlq"
+maxlen = 100000          # approximate cap (XADD MAXLEN ~) applied to every stream
+
+[decision]
+url = "http://127.0.0.1:5001/api/decide"   # decisionLM
+# The three parts of the decisionLM request:
+#   Context  = the event field named by context_field (from the ingestion stream)
+#   Question = this text, identical for every event
+#   Options  = the [[options]] names below, in this order, identical for every event
+question = "Which team should handle this customer-support ticket?"
+context_field = "payload"
+max_context_chars = 8000     # longer contexts are truncated (decisionLM's window is 8192 tokens)
+theta = 0.85                 # decisionLM escalates to the thinking reasoner below this confidence
+max_think_tokens = 6000      # reasoner thinking budget
+max_think_seconds = 150      # wall-clock cap on one escalation (decisionLM serves one request at a time)
+timeout_s = 400              # HTTP timeout: must cover queueing behind other deciders + max_think_seconds
+# health_url = "http://127.0.0.1:5001/api/health"   # default: derived from url
+model_version = "decisionLM-qwen3-8b-q8"
+# Where results the reasoner could not settle (it errored, so tier 1's answer was used) go instead of the
+# option's own stream. "" = send them to the option's stream, flagged low_confidence=1.
+review_stream = "decision:review"
+
+# One table per option. `name` is the text the model reads, so make it descriptive. `stream` is the
+# downstream topic that receives events decided as that option (default: "decision:<name>").
+[[options]]
+name = "billing or payment problem"
+stream = "decision:billing"
+
+[[options]]
+name = "technical fault or how-to question"
+stream = "decision:technical"
+
+[[options]]
+name = "sales or pricing enquiry"
+stream = "decision:sales"
+
+[reliability]
+batch_size = 1               # messages read per XREADGROUP. Keep small: see README (reclaim vs latency)
+block_ms = 5000
+reclaim_idle_s = 600         # reclaim messages idle longer than this. Must exceed timeout_s (enforced).
+reclaim_every_s = 30
+max_deliveries = 5           # failed deliveries before a message goes to the DLQ
+retries = 2                  # in-process retries of a transient decisionLM failure before leaving it pending
+retry_backoff_s = 5          # first retry delay; doubles each time
+health_poll_s = 5            # while decisionLM is unreachable, poll its health this often (messages wait, not fail)
+dedupe_ttl_s = 86400         # an event `id` is forwarded at most once within this window (0 = off)

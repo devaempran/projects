@@ -1,0 +1,61 @@
+# PLACEHOLDER CONFIG: replace the question and the options for your use case before running real data.
+# A filled-in example is in config/examples/support_tickets.toml.
+#
+# Override the file with PIPELINE_CONFIG=<path>. REDIS_HOST / REDIS_PORT env vars override [redis].
+# Streams and their consumer groups are created from this file by `python run.py setup` and at the start
+# of every command.
+
+[redis]
+host = "127.0.0.1"
+port = 6380              # the README starts Redis with `-p 6380:6379`; use 6379 for a default install
+
+[ingestion]
+stream = "ingestion"     # the main topic: its events become the Context
+group = "deciders"
+dlq_stream = "ingestion:dlq"
+maxlen = 100000          # approximate cap (XADD MAXLEN ~) applied to every stream
+
+[decision]
+url = "http://127.0.0.1:5001/api/decide"   # decisionLM
+# The three parts of the decisionLM request:
+#   Context  = the event field named by context_field (from the ingestion stream)
+#   Question = this text, identical for every event
+#   Options  = the [[options]] names below, in this order, identical for every event
+question = "<REPLACE: the question to ask about every event>"
+context_field = "payload"
+max_context_chars = 8000     # longer contexts are truncated (decisionLM's window is 8192 tokens)
+theta = 0.85                 # decisionLM escalates to the thinking reasoner below this confidence;
+                             # 0.85 comes from a science-exam benchmark, so re-tune it on labeled data of your own
+max_think_tokens = 6000      # reasoner thinking budget
+max_think_seconds = 150      # wall-clock cap on one escalation (decisionLM serves one request at a time)
+timeout_s = 400              # HTTP timeout: must cover queueing behind other deciders + max_think_seconds
+# health_url = "http://127.0.0.1:5001/api/health"   # default: derived from url
+model_version = "decisionLM-qwen3-8b-q8"             # tag written on every decided event
+# Where results the reasoner could not settle (it errored, so tier 1's answer was used) go instead of the
+# option's own stream. "" = send them to the option's stream, flagged low_confidence=1.
+review_stream = "decision:review"
+
+# One table per option, 2 to 26. `name` is the text the model reads, so make it descriptive. `stream` is the
+# downstream topic that receives events decided as that option (default: "decision:<name>").
+[[options]]
+name = "<REPLACE: first option>"
+stream = "decision:option_1"
+
+[[options]]
+name = "<REPLACE: second option>"
+stream = "decision:option_2"
+
+[[options]]
+name = "<REPLACE: third option>"
+stream = "decision:option_3"
+
+[reliability]
+batch_size = 1               # messages read per XREADGROUP. Keep small: see README (reclaim vs latency)
+block_ms = 5000
+reclaim_idle_s = 600         # reclaim messages idle longer than this. Must exceed timeout_s (enforced).
+reclaim_every_s = 30
+max_deliveries = 5           # failed deliveries before a message goes to the DLQ
+retries = 2                  # in-process retries of a transient decisionLM failure before leaving it pending
+retry_backoff_s = 5          # first retry delay; doubles each time
+health_poll_s = 5            # while decisionLM is unreachable, poll its health this often (messages wait, not fail)
+dedupe_ttl_s = 86400         # an event `id` is forwarded at most once within this window (0 = off)
