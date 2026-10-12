@@ -1,0 +1,38 @@
+name: decisionLM and pipeline tests
+
+on:
+  push:
+    paths: ["decisionLM/**", "redis-streams-pipeline/**", ".github/workflows/decisionlm.yml"]
+  pull_request:
+    paths: ["decisionLM/**", "redis-streams-pipeline/**", ".github/workflows/decisionlm.yml"]
+
+jobs:
+  decisionlm-api:
+    # The API tests fake the model, so they need neither a GPU nor llama-cpp-python.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install flask numpy
+      - run: python decisionLM/tests/test_api_edge.py
+
+  pipeline:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      REDIS_PORT: "6379"   # the configs default to 6380; the environment variable overrides them
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r redis-streams-pipeline/requirements.txt
+      - run: python redis-streams-pipeline/tests/test_edge_cases.py
+      - run: python redis-streams-pipeline/tests/verify.py
