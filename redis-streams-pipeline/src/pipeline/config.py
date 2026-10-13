@@ -1,146 +1,205 @@
-"""Loads and validates config.toml (path overridable with PIPELINE_CONFIG) and exposes it as constants.
-Any problem with the file raises ConfigError with a message naming the setting, never a bare KeyError."""
+"""Pipeline configuration as an immutable object, loaded explicitly.
+
+`load()` reads config/pipeline.toml (or the path in PIPELINE_CONFIG, or an explicit path) and validates it; nothing is
+read at import time, so tests and tools can build as many configs as they like. Any problem raises ConfigError with a
+message naming the setting, never a bare KeyError."""
+from __future__ import annotations
+
 import os
 import tomllib
+from dataclasses import dataclass
+from typing import Callable, Mapping
 from urllib.parse import urlsplit
 
 import redis
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PATH = os.environ.get("PIPELINE_CONFIG", os.path.join(ROOT, "config", "pipeline.toml"))
+DEFAULT_PATH = os.path.join(ROOT, "config", "pipeline.toml")
+_MISSING = object()
 
 
 class ConfigError(Exception):
     pass
 
 
-try:
-    with open(PATH, "rb") as _f:
-        _cfg = tomllib.load(_f)
-except FileNotFoundError:
-    raise ConfigError(f"config file not found: {PATH}") from None
-except tomllib.TOMLDecodeError as _e:
-    raise ConfigError(f"{PATH} is not valid TOML: {_e}") from None
-
-_MISSING = object()
+@dataclass(frozen=True)
+class Option:
+    name: str      # the text the model reads
+    stream: str    # the downstream topic for events decided as this option
 
 
-def _get(section, key, cast=str, default=_MISSING):
-    sec = _cfg.get(section)
-    if not isinstance(sec, dict):
-        raise ConfigError(f"missing [{section}] section in {PATH}")
-    if key not in sec:
-        if default is _MISSING:
-            raise ConfigError(f"missing setting [{section}] {key}")
-        return default
-    value = sec[key]
-    if isinstance(value, bool) or (cast in (int, float) and not isinstance(value, (int, float))):
-        raise ConfigError(f"[{section}] {key} must be {'a number' if cast in (int, float) else 'text'}, got {value!r}")
+@dataclass(frozen=True)
+class Config:
+    path: str
+    host: str
+    port: int
+    # ingestion
+    ingestion: str
+    ingestion_group: str
+    dlq: str
+    maxlen: int
+    # decision (the decisionLM request)
+    url: str
+    health_url: str
+    question: str
+    context_field: str
+    max_context_chars: int
+    theta: float
+    max_think_tokens: int
+    max_think_seconds: float
+    timeout_s: float
+    model_version: str
+    review_stream: str
+    options: tuple[Option, ...]
+    # reliability
+    batch_size: int
+    block_ms: int
+    reclaim_idle_s: float
+    reclaim_every_s: float
+    max_deliveries: int
+    retries: int
+    retry_backoff_s: float
+    health_poll_s: float
+    dedupe_ttl_s: int
+
+    @property
+    def option_names(self) -> list[str]:
+        return [o.name for o in self.options]
+
+    @property
+    def option_streams(self) -> dict[str, str]:
+        return {o.name: o.stream for o in self.options}
+
+    @property
+    def decision_streams(self) -> list[str]:
+        return [o.stream for o in self.options] + ([self.review_stream] if self.review_stream else [])
+
+    @property
+    def reclaim_idle_ms(self) -> int:
+        return int(self.reclaim_idle_s * 1000)
+
+    def group_for(self, stream: str) -> str:
+        return self.ingestion_group if stream == self.ingestion else f"{stream}-workers"
+
+
+def load(path: str | None = None, environ: Mapping[str, str] | None = None) -> Config:
+    """Read and validate a config file. `environ` (default: os.environ) supplies PIPELINE_CONFIG (when `path` is not
+    given) and the REDIS_HOST / REDIS_PORT overrides."""
+    environ = os.environ if environ is None else environ
+    path = path or environ.get("PIPELINE_CONFIG") or DEFAULT_PATH
     try:
-        return cast(value)
-    except (TypeError, ValueError):
-        raise ConfigError(f"[{section}] {key} has an invalid value: {value!r}") from None
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+    except FileNotFoundError:
+        raise ConfigError(f"config file not found: {path}") from None
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{path} is not valid TOML: {e}") from None
 
+    def get(section: str, key: str, cast: Callable = str, default=_MISSING):
+        sec = raw.get(section)
+        if not isinstance(sec, dict):
+            raise ConfigError(f"missing [{section}] section in {path}")
+        if key not in sec:
+            if default is _MISSING:
+                raise ConfigError(f"missing setting [{section}] {key}")
+            return default
+        value = sec[key]
+        if isinstance(value, bool) or (cast in (int, float) and not isinstance(value, (int, float))):
+            raise ConfigError(f"[{section}] {key} must be {'a number' if cast in (int, float) else 'text'}, got {value!r}")
+        try:
+            return cast(value)
+        except (TypeError, ValueError):
+            raise ConfigError(f"[{section}] {key} has an invalid value: {value!r}") from None
 
-def _env_int(name, fallback):
-    raw = os.environ.get(name)
-    if raw is None:
-        return fallback
+    file_port = get("redis", "port", int)  # validated even when the environment overrides it
+    port_env = environ.get("REDIS_PORT")
     try:
-        return int(raw)
+        port = int(port_env) if port_env is not None else file_port
     except ValueError:
-        raise ConfigError(f"environment variable {name} must be an integer, got {raw!r}") from None
+        raise ConfigError(f"environment variable REDIS_PORT must be an integer, got {port_env!r}") from None
+
+    tables = raw.get("options")
+    if not isinstance(tables, list) or not all(isinstance(o, dict) and isinstance(o.get("name"), str) for o in tables):
+        raise ConfigError("define at least two [[options]] tables, each with a text `name`")
+    url = get("decision", "url")
+    cfg = Config(
+        path=path,
+        host=environ.get("REDIS_HOST") or get("redis", "host"),
+        port=port,
+        ingestion=get("ingestion", "stream"),
+        ingestion_group=get("ingestion", "group"),
+        dlq=get("ingestion", "dlq_stream"),
+        maxlen=get("ingestion", "maxlen", int),
+        url=url,
+        health_url=get("decision", "health_url", str, "") or "{0.scheme}://{0.netloc}/api/health".format(urlsplit(url)),
+        question=get("decision", "question").strip(),
+        context_field=get("decision", "context_field"),
+        max_context_chars=get("decision", "max_context_chars", int),
+        theta=get("decision", "theta", float),
+        max_think_tokens=get("decision", "max_think_tokens", int),
+        max_think_seconds=get("decision", "max_think_seconds", float, 150),
+        timeout_s=get("decision", "timeout_s", float),
+        model_version=get("decision", "model_version"),
+        review_stream=get("decision", "review_stream", str, ""),
+        options=tuple(Option(o["name"], o.get("stream") or f"decision:{o['name']}") for o in tables),
+        batch_size=get("reliability", "batch_size", int),
+        block_ms=get("reliability", "block_ms", int),
+        reclaim_idle_s=get("reliability", "reclaim_idle_s", float),
+        reclaim_every_s=get("reliability", "reclaim_every_s", float),
+        max_deliveries=get("reliability", "max_deliveries", int),
+        retries=get("reliability", "retries", int, 2),
+        retry_backoff_s=get("reliability", "retry_backoff_s", float, 5),
+        health_poll_s=get("reliability", "health_poll_s", float, 5),
+        dedupe_ttl_s=get("reliability", "dedupe_ttl_s", int, 86400),
+    )
+    validate(cfg)
+    return cfg
 
 
-HOST = os.environ.get("REDIS_HOST", _get("redis", "host"))
-PORT = _env_int("REDIS_PORT", _get("redis", "port", int))
-
-INGESTION = _get("ingestion", "stream")
-INGESTION_GROUP = _get("ingestion", "group")
-DLQ = _get("ingestion", "dlq_stream")
-MAXLEN = _get("ingestion", "maxlen", int)
-
-URL = _get("decision", "url")
-HEALTH_URL = _get("decision", "health_url", str, "") or (
-    "{0.scheme}://{0.netloc}/api/health".format(urlsplit(URL)))
-QUESTION = _get("decision", "question").strip()
-CONTEXT_FIELD = _get("decision", "context_field")
-MAX_CONTEXT_CHARS = _get("decision", "max_context_chars", int)
-THETA = _get("decision", "theta", float)
-MAX_THINK_TOKENS = _get("decision", "max_think_tokens", int)
-MAX_THINK_SECONDS = _get("decision", "max_think_seconds", float, 150)
-TIMEOUT_S = _get("decision", "timeout_s", float)
-MODEL_VERSION = _get("decision", "model_version")
-REVIEW_STREAM = _get("decision", "review_stream", str, "")
-
-_options = _cfg.get("options")
-if not isinstance(_options, list) or not all(isinstance(o, dict) and isinstance(o.get("name"), str) for o in _options):
-    raise ConfigError("define at least two [[options]] tables, each with a text `name`")
-OPTIONS = [o["name"] for o in _options]                       # order is sent to the model as-is
-OPTION_STREAMS = {o["name"]: o.get("stream") or f"decision:{o['name']}" for o in _options}
-DECISION_STREAMS = list(OPTION_STREAMS.values()) + ([REVIEW_STREAM] if REVIEW_STREAM else [])
-
-BATCH = _get("reliability", "batch_size", int)
-BLOCK_MS = _get("reliability", "block_ms", int)
-RECLAIM_IDLE_S = _get("reliability", "reclaim_idle_s", float)
-RECLAIM_IDLE_MS = int(RECLAIM_IDLE_S * 1000)
-RECLAIM_EVERY_S = _get("reliability", "reclaim_every_s", float)
-MAX_DELIVERIES = _get("reliability", "max_deliveries", int)
-RETRIES = _get("reliability", "retries", int, 2)                # in-process retries of a transient failure
-RETRY_BACKOFF_S = _get("reliability", "retry_backoff_s", float, 5)
-HEALTH_POLL_S = _get("reliability", "health_poll_s", float, 5)
-DEDUPE_TTL_S = _get("reliability", "dedupe_ttl_s", int, 86400)  # 0 disables event-id de-duplication
-
-
-def _validate():
-    if not QUESTION:
+def validate(c: Config) -> None:
+    if not c.question:
         raise ConfigError("[decision] question must not be empty")
-    if urlsplit(URL).scheme not in ("http", "https") or not urlsplit(URL).netloc:
-        raise ConfigError(f"[decision] url must be an http(s) URL, got {URL!r}")
-    if not CONTEXT_FIELD.strip():
+    parts = urlsplit(c.url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ConfigError(f"[decision] url must be an http(s) URL, got {c.url!r}")
+    if not c.context_field.strip():
         raise ConfigError("[decision] context_field must not be empty")
-    if not 0 < THETA <= 1:
+    if not 0 < c.theta <= 1:
         raise ConfigError("[decision] theta must be in (0, 1]")
-    if MAX_CONTEXT_CHARS < 1 or MAX_THINK_TOKENS < 1 or MAX_THINK_SECONDS <= 0 or TIMEOUT_S <= 0:
+    if c.max_context_chars < 1 or c.max_think_tokens < 1 or c.max_think_seconds <= 0 or c.timeout_s <= 0:
         raise ConfigError("[decision] max_context_chars, max_think_tokens, max_think_seconds and timeout_s must be > 0")
-    if not 2 <= len(OPTIONS) <= 26:
+    names = c.option_names
+    if not 2 <= len(names) <= 26:
         raise ConfigError("define between 2 and 26 [[options]]")
-    if any(not o.strip() for o in OPTIONS) or len(set(OPTIONS)) != len(OPTIONS):
+    if any(not n.strip() for n in names) or len(set(names)) != len(names):
         raise ConfigError("option names must be unique, non-empty strings")
-    streams = list(OPTION_STREAMS.values()) + ([REVIEW_STREAM] if REVIEW_STREAM else [])
-    if any(not s.strip() for s in streams + [INGESTION, DLQ, INGESTION_GROUP]):
+    streams = c.decision_streams
+    if any(not s.strip() for s in streams + [c.ingestion, c.dlq, c.ingestion_group]):
         raise ConfigError("stream and group names must not be empty")
     if len(set(streams)) != len(streams):
         raise ConfigError("option streams (and review_stream) must be unique")
-    if {INGESTION, DLQ} & set(streams) or INGESTION == DLQ:
+    if {c.ingestion, c.dlq} & set(streams) or c.ingestion == c.dlq:
         raise ConfigError("ingestion/dlq streams must differ from the decision streams")
-    if BATCH < 1 or MAX_DELIVERIES < 1 or RETRIES < 0 or MAXLEN < 1 or BLOCK_MS < 0 or DEDUPE_TTL_S < 0:
+    if c.batch_size < 1 or c.max_deliveries < 1 or c.retries < 0 or c.maxlen < 1 or c.block_ms < 0 or c.dedupe_ttl_s < 0:
         raise ConfigError("batch_size, max_deliveries, maxlen must be >= 1 and retries, block_ms, dedupe_ttl_s >= 0")
-    if RECLAIM_IDLE_S <= TIMEOUT_S:
+    if c.reclaim_idle_s <= c.timeout_s:
         raise ConfigError(
-            f"[reliability] reclaim_idle_s ({RECLAIM_IDLE_S}) must exceed [decision] timeout_s ({TIMEOUT_S}); "
+            f"[reliability] reclaim_idle_s ({c.reclaim_idle_s}) must exceed [decision] timeout_s ({c.timeout_s}); "
             "otherwise a message still being decided is reclaimed and decided twice")
 
 
-_validate()
-
-
-def group_for(stream):
-    return INGESTION_GROUP if stream == INGESTION else f"{stream}-workers"
-
-
-def connect():
+def connect(cfg: Config) -> redis.Redis:
     # socket_timeout exceeds the XREADGROUP block time, so a dead connection errors instead of hanging forever.
-    return redis.Redis(host=HOST, port=PORT, decode_responses=True, socket_connect_timeout=5,
-                       socket_timeout=BLOCK_MS / 1000 + 30, health_check_interval=30)
+    return redis.Redis(host=cfg.host, port=cfg.port, decode_responses=True, socket_connect_timeout=5,
+                       socket_timeout=cfg.block_ms / 1000 + 30, health_check_interval=30)
 
 
-def ensure_groups(r):
+def ensure_groups(r: redis.Redis, cfg: Config) -> None:
     """Idempotent: XGROUP CREATE ... $ MKSTREAM for the ingestion stream and every configured decision
     stream; BUSYGROUP means it already exists."""
-    for stream in [INGESTION] + DECISION_STREAMS:
+    for stream in [cfg.ingestion] + cfg.decision_streams:
         try:
-            r.xgroup_create(stream, group_for(stream), id="$", mkstream=True)
+            r.xgroup_create(stream, cfg.group_for(stream), id="$", mkstream=True)
         except redis.ResponseError as e:
             if "BUSYGROUP" not in str(e):
                 raise

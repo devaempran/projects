@@ -14,13 +14,12 @@ import sys
 import threading
 import time
 import urllib.request
-from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEMO = os.path.dirname(HERE)
 ROOT = os.path.dirname(DEMO)
-os.environ.setdefault("PIPELINE_CONFIG", os.path.join(DEMO, "pipeline.demo.toml"))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import redis  # noqa: E402
@@ -31,7 +30,8 @@ SCAN_LIMIT = 5000   # entries read per stream for statistics
 SHOW_LIMIT = 80     # newest events sent to the browser per topic
 SNIPPET = 240
 
-r = config.connect()
+cfg = config.load(os.environ.get("PIPELINE_CONFIG") or os.path.join(DEMO, "pipeline.demo.toml"))
+r = config.connect(cfg)
 health = {"ok": None, "checked": 0.0}
 
 
@@ -39,7 +39,7 @@ def poll_health():
     """decisionLM serves one request at a time, so a busy server may not answer in time: report that as 'busy or down'."""
     while True:
         try:
-            with urllib.request.urlopen(config.HEALTH_URL, timeout=1.5) as resp:
+            with urllib.request.urlopen(cfg.health_url, timeout=1.5) as resp:
                 health["ok"] = resp.status == 200
         except Exception:
             health["ok"] = False
@@ -75,7 +75,7 @@ def group_info(stream):
         groups = r.xinfo_groups(stream)
     except redis.ResponseError:
         return {"pending": 0, "lag": 0, "consumers": 0}
-    g = next((x for x in groups if x["name"] == config.group_for(stream)), None)
+    g = next((x for x in groups if x["name"] == cfg.group_for(stream)), None)
     if not g:
         return {"pending": 0, "lag": 0, "consumers": 0}
     return {"pending": g["pending"], "lag": g.get("lag") or 0, "consumers": g["consumers"]}
@@ -97,13 +97,13 @@ def median(vals):
 
 
 def build_state():
-    option_names = {s: n for n, s in config.OPTION_STREAMS.items()}
+    option_names = {s: n for n, s in cfg.option_streams.items()}
     topics = []
-    for name, stream in config.OPTION_STREAMS.items():
+    for name, stream in cfg.option_streams.items():
         topics.append({"stream": stream, "name": name, "kind": "option"})
-    if config.REVIEW_STREAM:
-        topics.append({"stream": config.REVIEW_STREAM, "name": "review (reasoner failed)", "kind": "review"})
-    topics.append({"stream": config.DLQ, "name": "dead letters (cannot be decided)", "kind": "dlq"})
+    if cfg.review_stream:
+        topics.append({"stream": cfg.review_stream, "name": "review (reasoner failed)", "kind": "review"})
+    topics.append({"stream": cfg.dlq, "name": "dead letters (cannot be decided)", "kind": "dlq"})
 
     decided_all, matrix = [], {}
     for t in topics:
@@ -129,13 +129,13 @@ def build_state():
         {"name": "escalated to the reasoner", "n": len(reasoned), "acc": acc(reasoned), "tier1": acc(reasoned, "tier1_correct"),
          "latency": median([e["latency"] for e in reasoned])},
     ]
-    ing = group_info(config.INGESTION)
+    ing = group_info(cfg.ingestion)
     return {
         "now": time.time(),
-        "config": {"ingestion": config.INGESTION, "question": config.QUESTION, "theta": config.THETA,
-                   "options": list(config.OPTIONS), "streams": {n: s for n, s in config.OPTION_STREAMS.items()},
-                   "review": config.REVIEW_STREAM, "dlq": config.DLQ, "url": config.URL},
-        "ingestion": {"len": r.xlen(config.INGESTION), **ing},
+        "config": {"ingestion": cfg.ingestion, "question": cfg.question, "theta": cfg.theta,
+                   "options": list(cfg.option_names), "streams": {n: s for n, s in cfg.option_streams.items()},
+                   "review": cfg.review_stream, "dlq": cfg.dlq, "url": cfg.url},
+        "ingestion": {"len": r.xlen(cfg.ingestion), **ing},
         "decisionlm": {"ok": health["ok"], "checked": health["checked"]},
         "totals": {"decided": len(decided_all), "dead": next(t["len"] for t in topics if t["kind"] == "dlq"),
                    "in_flight": ing["pending"] + ing["lag"],
@@ -189,7 +189,7 @@ def main():
     args = ap.parse_args()
     r.ping()
     threading.Thread(target=poll_health, daemon=True).start()
-    print(f"dashboard for {config.INGESTION!r} at http://{args.host}:{args.port}  (config: {config.PATH})", flush=True)
+    print(f"dashboard for {cfg.ingestion!r} at http://{args.host}:{args.port}  (config: {cfg.path})", flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 

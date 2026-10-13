@@ -1,4 +1,4 @@
-name: decisionLM and pipeline tests
+name: decisionLM and pipeline
 
 on:
   push:
@@ -7,19 +7,26 @@ on:
     paths: ["decisionLM/**", "redis-streams-pipeline/**", ".github/workflows/decisionlm.yml"]
 
 jobs:
-  decisionlm-api:
+  decisionlm:
     # The API tests fake the model, so they need neither a GPU nor llama-cpp-python.
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: decisionLM
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install flask numpy
-      - run: python decisionLM/tests/test_api_edge.py
+      - run: pip install flask numpy waitress pytest ruff
+      - run: ruff check .
+      - run: pytest
 
   pipeline:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: redis-streams-pipeline
     services:
       redis:
         image: redis:7
@@ -27,12 +34,12 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
     env:
-      REDIS_PORT: "6379"   # the configs default to 6380; the environment variable overrides them
+      REDIS_PORT: "6379"   # the tests default to 6380 (the README's Docker command); the environment overrides it
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r redis-streams-pipeline/requirements.txt
-      - run: python redis-streams-pipeline/tests/test_edge_cases.py
-      - run: python redis-streams-pipeline/tests/verify.py
+      - run: pip install redis pytest ruff
+      - run: ruff check .
+      - run: pytest   # includes the slow end-to-end tests (about three minutes)

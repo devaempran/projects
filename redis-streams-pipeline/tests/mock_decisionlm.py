@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DELAY = float(os.environ.get("MOCK_DELAY_MS", 0)) / 1000
 QUESTION = os.environ["MOCK_QUESTION"]
 OPTIONS = json.loads(os.environ["MOCK_OPTIONS"])
-stats = {"requests": 0, "bad": 0, "escalated": 0, "max_context_len": 0, "max_think_seconds": None}
+stats = {"requests": 0, "bad": 0, "escalated": 0, "max_context_len": 0, "max_think_seconds": None, "last_theta": None}
 once = set()  # contexts that already failed once (FLAKY)
 
 
@@ -39,6 +39,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(400, {"error": "contract violation"})
         stats["max_context_len"] = max(stats["max_context_len"], len(body["Context"]))
         stats["max_think_seconds"] = body.get("max_think_seconds")
+        stats["last_theta"] = body.get("theta")
         ctx = body["Context"]
         # Context text can trigger failure modes (used by test_edge_cases.py)
         if "BAD400" in ctx:

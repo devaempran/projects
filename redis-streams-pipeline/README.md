@@ -23,7 +23,7 @@ redis-streams-pipeline/
 ├── config/pipeline.toml         all settings (a placeholder to fill in); the only file you normally edit
 ├── config/examples/             a worked example config
 ├── src/pipeline/
-│   ├── config.py                loads and validates the config; creates streams and consumer groups
+│   ├── config.py                an immutable Config object from config.load(); validation; creates streams and groups
 │   ├── decider.py               reads ingestion, calls decisionLM, routes, retries, dead-letters, reclaims
 │   ├── decisionlm_client.py     HTTP client for /api/decide and its failure classes
 │   ├── runtime.py               graceful shutdown, recovery from Redis problems, XAUTOCLAIM
@@ -33,11 +33,12 @@ redis-streams-pipeline/
 │   ├── inspect_streams.py       show lengths, groups, pending counts, latest dead letters
 │   └── requeue_dlq.py           move dead-lettered events back to ingestion
 ├── demo/                        end-to-end demo: labelled support tickets, a publisher and a live dashboard (demo/README.md)
-├── tests/
-│   ├── test_edge_cases.py       50 checks: bad events, outages, duplicates, Redis problems, config mistakes
-│   ├── verify.py                1,000 events, kill a decider mid-run, check nothing is lost or duplicated
+├── tests/                       pytest suite; every test gets its own uniquely named streams and mock port
+│   ├── test_config.py, test_decider.py, test_runtime.py, test_worker.py, test_tools.py
+│   ├── test_end_to_end.py       slow: 1,000 events, kill a decider mid-run, poison message (about 3 minutes)
 │   └── mock_decisionlm.py       stand-in for decisionLM used by the tests
 ├── requirements.txt             redis>=5.0
+├── pyproject.toml               packaging (src layout, `pipeline` command), pytest and ruff settings
 └── LICENSE                      MIT
 ```
 
@@ -127,8 +128,10 @@ See [`demo/README.md`](demo/README.md).
 ```powershell
 python run.py inspect                       # stream lengths, groups, pending, lag, latest dead-letter reasons
 python run.py requeue --reason "decisionLM" # move dead-lettered events back to ingestion (--limit N, --dry-run)
-python tests/test_edge_cases.py             # about 1 minute, needs the Redis container
-python tests/verify.py                      # about 3 minutes; mock decisionLM, throwaway streams
+pip install pytest ruff                     # once
+pytest -m "not slow"                        # 57 tests, about 35 seconds, needs the Redis container
+pytest                                      # everything, including the 3-minute end-to-end run
+ruff check .                                # lint
 ```
 
 ---
@@ -178,6 +181,6 @@ config refuses `reclaim_idle_s <= timeout_s`. Keep `reclaim_idle_s` above (numbe
 
 ### What has been tested
 
-- `tests/test_edge_cases.py` (50 checks) and `tests/verify.py` (1,000 events through two deciders, one killed while holding 47 un-acked messages: all 1,000 accounted for, none duplicated, nothing pending, a poison message dead-lettered). Both use a mock decisionLM.
+- A pytest suite: 57 fast tests (bad events, decisionLM failures and outages, duplicates, Redis problems, config mistakes, the command-line tools) and 3 slow end-to-end tests (1,000 events through two real decider processes, one killed while it holds un-acked messages: all 1,000 accounted for, none duplicated, nothing pending; a poison message dead-lettered). They use a mock decisionLM and a real Redis, with unique stream names per test.
 - A live check sent 5 real events through the pipeline and the real decisionLM: all were routed and acknowledged, with nothing dead-lettered. The payloads were meaningless placeholders (all were escalated), so this shows the plumbing, not decision quality.
 - Not validated: accuracy on your real decisions (decisionLM's calibration comes from ARC, a science exam), long-running behaviour, and Redis Cluster.

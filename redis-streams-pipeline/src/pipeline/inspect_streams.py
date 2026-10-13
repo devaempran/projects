@@ -1,26 +1,29 @@
 """Print XLEN, XINFO GROUPS and pending counts for every stream, and the latest dead-letter reasons.
 (Named inspect_streams.py rather than inspect.py: a local inspect.py would shadow Python's stdlib module.)"""
+from __future__ import annotations
+
 import redis
 
 from pipeline import config
 
 
-def main():
-    r = config.connect()
+def main(argv: list[str] | None = None) -> None:
+    cfg = config.load()
+    r = config.connect(cfg)
     try:
         r.ping()
     except redis.RedisError as e:
-        raise SystemExit(f"cannot reach redis at {config.HOST}:{config.PORT}: {e}")
-    for s in [config.INGESTION, config.DLQ] + config.DECISION_STREAMS:
+        raise SystemExit(f"cannot reach redis at {cfg.host}:{cfg.port}: {e}") from None
+    for s in [cfg.ingestion, cfg.dlq] + cfg.decision_streams:
         print(f"{s}  XLEN={r.xlen(s)}")  # 0 for a stream that doesn't exist yet
-        if s == config.DLQ:
+        if s == cfg.dlq:
             for _id, rec in r.xrevrange(s, count=3):
                 print(f"  latest: id={rec.get('id')} attempts={rec.get('attempts')} reason={rec.get('reason')}")
             continue
         try:
             groups = r.xinfo_groups(s)
         except redis.ResponseError:
-            print("  (stream or groups missing; run setup_groups.py)")
+            print("  (stream or groups missing; run `python run.py setup`)")
             continue
         for g in groups:
             print(f"  group {g['name']}: consumers={g['consumers']} pending={g['pending']} "

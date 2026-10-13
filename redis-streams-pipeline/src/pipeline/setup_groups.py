@@ -1,12 +1,14 @@
 """Create all streams and consumer groups from the config (safe to run repeatedly)."""
+from __future__ import annotations
+
 from pipeline import config
 
 
-def main():
-    r = config.connect()
-    config.ensure_groups(r)
-    for s in [config.INGESTION] + config.DECISION_STREAMS:
-        print(f"{s:28s} group={config.group_for(s)}")
+def main(argv: list[str] | None = None) -> None:
+    cfg = config.load()
+    config.ensure_groups(config.connect(cfg), cfg)
+    for s in [cfg.ingestion] + cfg.decision_streams:
+        print(f"{s:28s} group={cfg.group_for(s)}")
 
 
 if __name__ == "__main__":

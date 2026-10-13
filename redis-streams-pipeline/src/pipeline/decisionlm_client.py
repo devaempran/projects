@@ -2,11 +2,13 @@
   Permanent    retrying cannot help (bad event, request rejected with HTTP 4xx, unknown option)
   Transient    might work next time (timeout, HTTP 5xx, malformed reply)
   Unreachable  decisionLM is not accepting requests (connection refused, 502/503/504)"""
+from __future__ import annotations
+
 import json
 import urllib.error
 import urllib.request
 
-from pipeline import config
+from pipeline.config import Config
 
 
 class Permanent(Exception):
@@ -21,19 +23,21 @@ class Unreachable(Transient):
     """decisionLM is not accepting requests."""
 
 
-def call_decisionlm(record, theta):
+def build_request(cfg: Config, context: str, theta: float) -> dict:
+    """The three parts of the decisionLM request (Context varies, Question and Options are fixed) plus the limits."""
+    return {"Context": context[:cfg.max_context_chars], "Question": cfg.question, "Options": cfg.option_names,
+            "theta": theta, "max_think_tokens": cfg.max_think_tokens, "max_think_seconds": cfg.max_think_seconds}
+
+
+def call_decisionlm(cfg: Config, record: dict, theta: float) -> dict:
     """POST the event to /api/decide. Returns the parsed reply (+ context_truncated)."""
-    context = record.get(config.CONTEXT_FIELD)
+    context = record.get(cfg.context_field)
     if not isinstance(context, str) or not context.strip():
-        raise Permanent(f"event has no usable {config.CONTEXT_FIELD!r} field")
-    truncated = len(context) > config.MAX_CONTEXT_CHARS
-    body = json.dumps({"Context": context[:config.MAX_CONTEXT_CHARS], "Question": config.QUESTION,
-                       "Options": config.OPTIONS, "theta": theta,
-                       "max_think_tokens": config.MAX_THINK_TOKENS,
-                       "max_think_seconds": config.MAX_THINK_SECONDS}).encode()
-    req = urllib.request.Request(config.URL, data=body, headers={"Content-Type": "application/json"})
+        raise Permanent(f"event has no usable {cfg.context_field!r} field")
+    body = json.dumps(build_request(cfg, context, theta)).encode()
+    req = urllib.request.Request(cfg.url, data=body, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=config.TIMEOUT_S) as resp:
+        with urllib.request.urlopen(req, timeout=cfg.timeout_s) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as e:
         detail = e.read()[:200].decode(errors="replace")
@@ -43,28 +47,29 @@ def call_decisionlm(record, theta):
             raise Transient(f"decisionLM error (HTTP {e.code}): {detail}") from None
         raise Permanent(f"decisionLM rejected the request (HTTP {e.code}): {detail}") from None
     except TimeoutError:
-        raise Transient(f"decisionLM did not answer within {config.TIMEOUT_S:.0f}s") from None
+        raise Transient(f"decisionLM did not answer within {cfg.timeout_s:.0f}s") from None
     except urllib.error.URLError as e:
         if isinstance(e.reason, TimeoutError):
-            raise Transient(f"decisionLM did not answer within {config.TIMEOUT_S:.0f}s") from None
+            raise Transient(f"decisionLM did not answer within {cfg.timeout_s:.0f}s") from None
         raise Unreachable(f"cannot reach decisionLM: {e.reason}") from None
     except OSError as e:  # connection reset mid-reply, etc.
         raise Unreachable(f"cannot reach decisionLM: {e}") from None
     try:
         out = json.loads(raw)
-        answer, conf, src, t1 = out["answer"], out["confidence"], out["source"], out["tier1_answer"]
-        float(conf)
+        answer = out["answer"]
+        float(out["confidence"])
+        out["source"], out["tier1_answer"]  # required fields
     except (ValueError, KeyError, TypeError):
         raise Transient("decisionLM returned a malformed reply") from None
-    if answer not in config.OPTION_STREAMS:
+    if answer not in cfg.option_streams:
         raise Permanent(f"decisionLM answered {answer!r}, which is not a configured option")
-    out["context_truncated"] = truncated
+    out["context_truncated"] = len(context) > cfg.max_context_chars
     return out
 
 
-def decisionlm_healthy():
+def decisionlm_healthy(cfg: Config) -> bool:
     try:
-        with urllib.request.urlopen(config.HEALTH_URL, timeout=5) as resp:
+        with urllib.request.urlopen(cfg.health_url, timeout=5) as resp:
             return resp.status == 200
     except Exception:
         return False
