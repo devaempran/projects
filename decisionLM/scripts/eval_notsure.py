@@ -14,11 +14,9 @@ Usage: python eval_notsure.py [-n 0] [--url ...] [--refresh]
 """
 import argparse
 import json
-import math
 import os
 
 import numpy as np
-
 from eval_arc import load_arc, score
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -62,8 +60,8 @@ def variant(row, name, T):
 
 
 def evaluate(rows, name, T):
-    pred, conf, pns = zip(*(variant(r, name, T) for r in rows))
-    corr = np.array([p == r["gold"] for p, r in zip(pred, rows)], float)
+    pred, conf, pns = zip(*(variant(r, name, T) for r in rows), strict=True)
+    corr = np.array([p == r["gold"] for p, r in zip(pred, rows, strict=True)], float)
     return corr, np.array(conf), np.array(pns)
 
 

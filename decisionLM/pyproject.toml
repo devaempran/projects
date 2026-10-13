@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "decisionlm"
+version = "0.1.0"
+description = "Local multiple-choice decisions with calibrated confidence, escalating uncertain cases to a thinking pass"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = ["flask", "numpy", "waitress", "llama-cpp-python"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+bench = ["pandas", "pyarrow", "huggingface_hub", "matplotlib"]
+
+[project.scripts]
+decisionlm = "decisionlm.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+extend-exclude = ["bench"]   # research scripts, kept as they were run
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["E402"]   # they put the project's bench/ directory on sys.path before importing from it

@@ -20,20 +20,22 @@ decisionLM/
 │   ├── decisionlm.toml         every setting: model, prompts, /api/decide defaults, server
 │   └── calibration.json        softmax temperature T (written by scripts/fit_temperature.py)
 ├── src/decisionlm/
-│   ├── settings.py             loads the config; environment variables override a few settings
-│   ├── server.py               Flask routes, request validation, error mapping, the decide cascade
+│   ├── settings.py             an immutable Settings object from the config; nothing is read at import time
+│   ├── server.py               Flask app factory: routes, request validation, error mapping (thin; no decision logic)
+│   ├── decide.py               the cascade: tier 1, escalating to tier 2, with the fallback rules (no HTTP)
 │   ├── tier1.py                one forward pass -> a probability per option
 │   ├── tier2.py                the thinking reasoner
 │   ├── model.py                the one resident llama.cpp model, its lock, GPU status, option-letter token ids
 │   ├── prompts.py              both tiers' prompts, and neutralising of caller-supplied text
 │   └── errors.py               exceptions, each mapped to an HTTP status
 ├── scripts/                    eval_arc.py, eval_decide.py, eval_notsure.py, fit_temperature.py
-├── tests/                      test_api_edge.py (no GPU needed), test_scoring.py (needs the model)
+├── tests/                      pytest suite (no GPU needed): API, cascade, prompts, reasoner, settings; test_model.py needs the model
 ├── bench/                      benchmark harness, plots and summary data (bench/README.md, bench/FINDINGS.md)
 ├── docs/PIPELINE_PLAN.md       design of the confidence-routed cascade and why it is shaped this way
 ├── static/                     the web UI served at /
 ├── models/                     GGUF model files (not in git)
 ├── RESULTS.md                  evaluation results, what changed because of them, limitations
+├── pyproject.toml              packaging (src layout, `decisionlm` command), pytest and ruff settings
 ├── requirements.txt
 └── LICENSE                     MIT
 ```
@@ -127,8 +129,10 @@ Errors are always JSON `{"error": "..."}`: **400** bad input, **413** body or pr
 ### Tests and evaluation
 
 ```powershell
-.venv\Scripts\python tests/test_api_edge.py          # 65 checks, no GPU needed (model is faked)
-.venv\Scripts\python tests/test_scoring.py           # needs the model: probabilities sum to 1, position bias, bad labels
+pip install pytest ruff                               # once
+pytest                                                # 72 tests, no GPU needed (the model is faked)
+ruff check .                                          # lint
+$env:RUN_MODEL_TESTS = "1"; pytest tests/test_model.py   # real model: sums to 1, follows content, bad labels (stop the server first: it needs 10 GB of VRAM)
 .venv\Scripts\python scripts/eval_arc.py --split test -n 0      # accuracy and calibration on ARC-Challenge, needs a running server
 .venv\Scripts\python scripts/fit_temperature.py                 # refit T on ARC validation, writes config/calibration.json
 .venv\Scripts\python scripts/eval_decide.py                     # test the reasoner on the low-confidence ARC items

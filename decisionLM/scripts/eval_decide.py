@@ -4,10 +4,14 @@ below 0.9 confidence on. theta=2 forces escalation so every item reaches the rea
 response's tier1_answer gives the production tier-1 prediction for comparison.
 Resumable: appends to bench/results/decide_test.jsonl.   usage: python eval_decide.py [--url ...] [--max-think 6000]
 """
-import argparse, json, os, sys, time, urllib.request
+import argparse
+import json
+import os
+import sys
+import urllib.request
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "bench"))
-import numpy as np
 from common import load, load_arc, softmax
 
 ap = argparse.ArgumentParser()
@@ -20,7 +24,7 @@ base = load("p1_test.json")
 low = [r["id"] for r in base if softmax(r["lp"], 6.75).max() < 0.9]
 conf0 = {r["id"]: float(softmax(r["lp"], 6.75).max()) for r in base}
 items = {it["id"]: it for it in load_arc("test")}
-done = set(json.loads(l)["id"] for l in open(args.out)) if os.path.exists(args.out) else set()
+done = set(json.loads(line)["id"] for line in open(args.out)) if os.path.exists(args.out) else set()
 print(len(low), "items below 0.9;", len(done), "done", flush=True)
 for n, iid in enumerate(low, 1):
     if iid in done:

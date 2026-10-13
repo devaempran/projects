@@ -204,7 +204,7 @@ Added later: the `/api/decide` cascade (section 3.7), a wider context window (8,
 
 ## 5. Hardening
 
-Found by reviewing the code for edge cases and covered by tests (65 API checks that need no GPU; 50 pipeline checks plus a 1,000-event end-to-end run):
+Found by reviewing the code for edge cases and covered by tests (72 decisionLM tests that need no GPU; 57 fast and 3 slow pipeline tests, including a 1,000-event end-to-end run):
 
 - **Structural prompt injection (fixed) and content injection (not fixed):** the prompt is tokenised with special tokens enabled, so a Context containing `<|im_end|>` closed the user turn and let a caller write
   their own system prompt. Caller text is now defused, and newlines in an option can no longer fake another option (no ARC prompt changes: 0 of 1,471 items). This closes the template hole only. Instruction-style text
