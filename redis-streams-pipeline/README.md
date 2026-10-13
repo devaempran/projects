@@ -32,6 +32,7 @@ redis-streams-pipeline/
 │   ├── setup_groups.py          create streams and groups
 │   ├── inspect_streams.py       show lengths, groups, pending counts, latest dead letters
 │   └── requeue_dlq.py           move dead-lettered events back to ingestion
+├── demo/                        end-to-end demo: labelled support tickets, a publisher and a live dashboard (demo/README.md)
 ├── tests/
 │   ├── test_edge_cases.py       50 checks: bad events, outages, duplicates, Redis problems, config mistakes
 │   ├── verify.py                1,000 events, kill a decider mid-run, check nothing is lost or duplicated
@@ -115,6 +116,11 @@ XADD ingestion MAXLEN ~ 100000 * id 7f3a... payload "customer says the invoice t
 Each decided event lands on the option's stream with its original fields plus: `label`, `confidence`, `source` (`fast` or `reasoner`), `tier1_label`,
 `low_confidence`, `context_truncated`, `decision_latency_s`, `model_version`, `decided_at` (and `reasoner_error` when the reasoner failed).
 Replace `process` in `worker.py` (or run your own consumer group on those streams) to act on them.
+
+### See it working
+
+`demo/` publishes labelled support tickets through the pipeline and the real decisionLM and shows on a live dashboard which topic each lands in, and whether that matched the label.
+See [`demo/README.md`](demo/README.md).
 
 ### Operate
 

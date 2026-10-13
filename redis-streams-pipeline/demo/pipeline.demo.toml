@@ -1,0 +1,62 @@
+# Pipeline config for the demo: routing customer-support tickets. Used by demo/publisher and demo/dashboard
+# (they default to this file) and by the deciders/workers when started with
+#   PIPELINE_CONFIG=demo/pipeline.demo.toml python run.py decider decider-1
+# All stream names start with "demo:" so the demo never touches other streams in the same Redis.
+#
+# Event shape: XADD demo:tickets * id <ticket id> payload "<ticket text>" ts <unix time>
+# (the publisher also adds `expected` and `kind`, which the pipeline carries through untouched so the
+# dashboard can show whether each decision matched the author's label).
+
+[redis]
+host = "127.0.0.1"
+port = 6380
+
+[ingestion]
+stream = "demo:tickets"
+group = "demo-deciders"
+dlq_stream = "demo:tickets:dlq"
+maxlen = 100000
+
+[decision]
+url = "http://127.0.0.1:5001/api/decide"
+question = "Which team should handle this customer support ticket?"
+context_field = "payload"
+max_context_chars = 8000
+theta = 0.85
+max_think_tokens = 6000
+max_think_seconds = 150
+timeout_s = 400
+model_version = "decisionLM-qwen3-8b-q8"
+review_stream = "demo:review"
+
+# The option names are what the model reads, so they are written as descriptions.
+[[options]]
+name = "billing or payment problem"
+stream = "demo:billing"
+
+[[options]]
+name = "technical fault or how-to question"
+stream = "demo:technical"
+
+[[options]]
+name = "sales or pricing enquiry"
+stream = "demo:sales"
+
+[[options]]
+name = "account access or security issue"
+stream = "demo:account"
+
+[[options]]
+name = "general feedback or complaint"
+stream = "demo:feedback"
+
+[reliability]
+batch_size = 1
+block_ms = 5000
+reclaim_idle_s = 600
+reclaim_every_s = 30
+max_deliveries = 5
+retries = 2
+retry_backoff_s = 5
+health_poll_s = 5
+dedupe_ttl_s = 86400

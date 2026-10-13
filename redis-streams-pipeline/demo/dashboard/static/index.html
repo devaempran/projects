@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline dashboard</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f1f0ec;  --surface-1: #fcfcfb;  --border: #e2e0da;  --grid: #ecebe6;
+    --text-primary: #0b0b0b;  --text-secondary: #52514e;  --text-muted: #77766f;
+    --series-1: #2a78d6;
+    --good: #0ca30c;  --warning: #fab219;  --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #121211;  --surface-1: #1a1a19;  --border: #2d2d2a;  --grid: #262624;
+      --text-primary: #f0efec;  --text-secondary: #c3c2b7;  --text-muted: #8f8e86;
+      --series-1: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #121211;  --surface-1: #1a1a19;  --border: #2d2d2a;  --grid: #262624;
+    --text-primary: #f0efec;  --text-secondary: #c3c2b7;  --text-muted: #8f8e86;
+    --series-1: #3987e5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--text-primary);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 24px 48px; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; font-weight: 650; }
+  .sub { color: var(--text-secondary); }
+  .spacer { flex: 1; }
+  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 14px 0 6px; }
+  .controls label { color: var(--text-secondary); display: flex; gap: 6px; align-items: center; }
+  input[type=search] { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
+                       border-radius: 6px; padding: 5px 9px; min-width: 200px; font: inherit; }
+  button { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
+           border-radius: 6px; padding: 5px 11px; font: inherit; cursor: pointer; }
+  button:hover, input[type=search]:focus { border-color: var(--text-muted); outline: none; }
+  .pill { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--border); background: var(--surface-1);
+          border-radius: 999px; padding: 3px 11px; color: var(--text-secondary); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-muted); display: inline-block; }
+  .dot.live { background: var(--good); }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .card h2 { font-size: 14px; margin: 0 0 2px; font-weight: 650; }
+  .card .note { color: var(--text-secondary); font-size: 12.5px; margin-bottom: 12px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 12px 0 14px; }
+  .tile .v { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+  .tile .l { color: var(--text-secondary); font-size: 12.5px; }
+  .tile .d { color: var(--text-muted); font-size: 12px; min-height: 17px; }
+  .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 12px; margin-bottom: 12px; }
+  @media (max-width: 980px) { .two { grid-template-columns: 1fr; } }
+  /* bar chart */
+  .bars { display: grid; grid-template-columns: max-content 1fr; gap: 9px 12px; align-items: center; }
+  .bars .lab { color: var(--text-secondary); font-size: 13px; text-align: right; display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+  .track { position: relative; height: 22px; display: flex; align-items: center; }
+  .bar { height: 14px; border-radius: 0 4px 4px 0; min-width: 3px; background: var(--series-1); }
+  .bar.review { background: var(--warning); }
+  .bar.dlq { background: var(--critical); }
+  .val { margin-left: 8px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .hit { position: absolute; inset: -3px 0 -3px 0; }
+  .icon { font-weight: 700; font-size: 12px; }
+  .icon.review { color: var(--warning); } .icon.dlq { color: var(--critical); }
+  /* heatmap */
+  table.heat { border-collapse: separate; border-spacing: 3px; width: 100%; font-size: 12.5px; }
+  .heat th { font-weight: 500; color: var(--text-secondary); padding: 2px 4px; }
+  .heat th.rowh { text-align: right; max-width: 190px; font-size: 12px; }
+  .heat td { text-align: center; height: 34px; border-radius: 4px; font-variant-numeric: tabular-nums; font-weight: 600;
+             background: var(--grid); min-width: 52px; position: relative; }
+  .heat td.diag { outline: 2px solid var(--text-secondary); outline-offset: -2px; }
+  .heat td.zero { color: var(--text-muted); font-weight: 400; }
+  .heat td.tot { background: none; color: var(--text-secondary); font-weight: 500; }
+  .legend { color: var(--text-secondary); font-size: 12px; margin-top: 8px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .swatch { display: inline-block; width: 16px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }
+  /* tier table */
+  table.plain { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .plain th { text-align: left; color: var(--text-secondary); font-weight: 500; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border); }
+  .plain td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+  .plain td.n, .plain th.n { text-align: right; padding-right: 18px; }
+  .up { font-weight: 600; }
+  /* topic columns */
+  .topics { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; margin-top: 12px; }
+  .topic header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+  .topic .name { font-weight: 650; }
+  .topic .count { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  .topic .meta { color: var(--text-muted); font-size: 12px; margin-bottom: 8px; min-height: 17px; }
+  .list { max-height: 440px; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 3px; }
+  .ev { border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; padding: 7px 10px; }
+  .ev.bad { border-left-color: var(--critical); } .ev.ok { border-left-color: var(--good); }
+  .ev.none { border-left-color: var(--border); }
+  .ev .t { font-size: 13px; overflow-wrap: anywhere; }
+  .ev .m { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 5px; color: var(--text-secondary); font-size: 12px; align-items: center; }
+  .ev .m .kind { color: var(--text-muted); }
+  .badge { border: 1px solid var(--border); border-radius: 4px; padding: 0 6px; font-size: 11.5px; }
+  .badge.reasoner { border-color: var(--series-1); }
+  .mark { font-weight: 600; }
+  .mark .g { color: var(--good); } .mark .c { color: var(--critical); }
+  .empty { color: var(--text-muted); padding: 10px 2px; }
+  .banner { background: var(--surface-1); border: 1px solid var(--critical); border-radius: 8px; padding: 10px 14px; margin: 10px 0; }
+  details { margin-top: 14px; } summary { cursor: pointer; color: var(--text-secondary); }
+  #tip { position: fixed; z-index: 10; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+         border-radius: 8px; padding: 8px 11px; box-shadow: 0 4px 16px rgba(0,0,0,.18); font-size: 12.5px; display: none; max-width: 280px; }
+  #tip b { font-size: 15px; font-variant-numeric: tabular-nums; } #tip .s { color: var(--text-secondary); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Pipeline dashboard</h1>
+    <span class="sub" id="question"></span>
+    <span class="spacer"></span>
+    <span class="pill" id="live"><span class="dot"></span><span>connecting</span></span>
+  </header>
+
+  <div class="controls">
+    <span class="pill" id="p-llm"></span>
+    <span class="pill" id="p-ing"></span>
+    <span class="spacer"></span>
+    <label><input type="checkbox" id="only-bad"> only mismatches</label>
+    <input type="search" id="q" placeholder="filter event text or id">
+    <button id="pause">Pause</button>
+    <button id="theme">Theme</button>
+  </div>
+  <div id="error"></div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="two">
+    <div class="card">
+      <h2>Events per topic</h2>
+      <div class="note">How many events ended up in each downstream topic.</div>
+      <div class="bars" id="bars"></div>
+    </div>
+    <div class="card">
+      <h2>Where each labelled ticket ended up</h2>
+      <div class="note">Rows: the label the ticket was written with. Columns: the topic it landed in. Outlined cells are the correct topic.</div>
+      <table class="heat" id="heat"></table>
+      <div class="legend" id="heat-legend"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>What the thinking step added</h2>
+    <div class="note">Tier 1 answers fast; low-confidence events are escalated to the reasoner. "Tier 1 alone" is what tier 1 would have scored on the same events.</div>
+    <table class="plain" id="tiers"></table>
+  </div>
+
+  <div class="topics" id="topics"></div>
+
+  <details>
+    <summary>Table view of the charts</summary>
+    <table class="plain" id="tbl-topics" style="margin-top:10px"></table>
+    <table class="plain" id="tbl-matrix" style="margin-top:14px"></table>
+  </details>
+</div>
+<div id="tip" role="tooltip"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+const pct = (x, d = 1) => x == null ? "–" : (x * 100).toFixed(d) + "%";
+const secs = (x) => x == null ? "–" : (x < 10 ? x.toFixed(2) : x.toFixed(1)) + " s";
+const ago = (t, now) => { if (!t) return ""; const d = Math.max(0, now - t); return d < 90 ? Math.round(d) + "s ago" : Math.round(d / 60) + "m ago"; };
+const short = (t) => t.kind === "dlq" ? "dead letter" : t.kind === "review" ? "review" : t.stream.split(":").pop();
+
+let state = null, paused = false;
+
+// ---------- tooltip (one element, textContent only) ----------
+const tip = $("#tip");
+function showTip(ev, big, small, lines) {
+  tip.replaceChildren();
+  const b = el("b", null, big); tip.append(b, document.createTextNode(" "), el("span", null, small));
+  for (const l of lines) tip.append(el("div", "s", l));
+  tip.style.display = "block";
+  const x = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8), y = Math.min(ev.clientY + 14, innerHeight - tip.offsetHeight - 8);
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+const hideTip = () => { tip.style.display = "none"; };
+function hover(node, fn) {
+  node.tabIndex = 0;
+  node.addEventListener("pointermove", (e) => fn(e)); node.addEventListener("pointerleave", hideTip);
+  node.addEventListener("focus", () => { const r = node.getBoundingClientRect(); fn({ clientX: r.left + r.width / 2, clientY: r.top }); });
+  node.addEventListener("blur", hideTip);
+}
+
+// ---------- render ----------
+function tile(value, label, detail) {
+  const t = el("div", "card tile"); t.append(el("div", "v", value), el("div", "l", label), el("div", "d", detail || "")); return t;
+}
+
+function renderTiles(s) {
+  const T = s.totals, all = s.tiers[0];
+  const tiles = $("#tiles"); tiles.replaceChildren(
+    tile(String(s.ingestion.len), "Events published", "to " + s.config.ingestion),
+    tile(String(T.decided), "Decided", T.in_flight ? T.in_flight + " still in flight" : "nothing waiting"),
+    tile(pct(all.acc.acc), "Accuracy vs. label", all.acc.n ? all.acc.right + " of " + all.acc.n + " labelled events" : "no labelled events yet"),
+    tile(pct(all.tier1.acc), "Tier 1 alone", all.tier1.n ? "on the same " + all.tier1.n + " events" : ""),
+    tile(T.decided ? pct(T.escalated / T.decided, 0) : "–", "Escalated to the reasoner", T.escalated + " of " + T.decided + " decided"),
+    tile(String(T.dead), "Dead letters", T.dead ? "could not be decided" : "none"),
+  );
+}
+
+function renderBars(s) {
+  const bars = $("#bars"); bars.replaceChildren();
+  const max = Math.max(1, ...s.topics.map((t) => t.len));
+  for (const t of s.topics) {
+    const lab = el("div", "lab");
+    if (t.kind !== "option") lab.append(el("span", "icon " + t.kind, t.kind === "dlq" ? "✕" : "!"));
+    lab.append(document.createTextNode(short(t)));
+    const track = el("div", "track");
+    const bar = el("div", "bar " + (t.kind === "option" ? "" : t.kind)); bar.style.width = (t.len / max * 100 * 0.86) + "%";
+    if (!t.len) bar.style.display = "none";  // no sliver for an empty topic (it would read as data)
+    track.append(bar, el("span", "val", String(t.len)));
+    const hit = el("div", "hit"); track.append(hit);
+    hover(hit, (e) => {
+      const lines = [t.name];
+      if (t.accuracy && t.accuracy.n) lines.push(t.accuracy.right + " of " + t.accuracy.n + " match the label");
+      if (t.group) lines.push("waiting for a worker: " + t.group.lag + " · being processed: " + t.group.pending);
+      showTip(e, String(t.len), t.len === 1 ? "event" : "events", lines);
+    });
+    bars.append(lab, track);
+  }
+}
+
+function renderHeat(s) {
+  const heat = $("#heat"); heat.replaceChildren();
+  const cols = s.topics, rows = s.config.options;
+  let max = 1; for (const r of rows) for (const c of cols) max = Math.max(max, (s.matrix[r] || {})[c.stream] || 0);
+  const head = el("tr"); head.append(el("th"));
+  for (const c of cols) head.append(el("th", null, short(c)));
+  head.append(el("th", null, "sent")); heat.append(head);
+  for (const r of rows) {
+    const tr = el("tr"); tr.append(el("th", "rowh", r));
+    let total = 0;
+    for (const c of cols) {
+      const v = (s.matrix[r] || {})[c.stream] || 0; total += v;
+      const td = el("td", (v ? "" : "zero ") + (s.config.streams[r] === c.stream ? "diag" : ""), String(v));
+      if (v) {
+        const w = Math.max(10, v / max * 100);
+        td.style.background = "color-mix(in oklab, var(--series-1) " + w + "%, var(--surface-1))";
+        td.style.color = w > 55 ? "#fff" : "var(--text-primary)";
+      }
+      hover(td, (e) => showTip(e, String(v), v === 1 ? "event" : "events", ["labelled “" + r + "”", "ended in " + short(c) + (c.kind === "option" ? "" : " topic")]));
+      tr.append(td);
+    }
+    tr.append(el("td", "tot", String(total))); heat.append(tr);
+  }
+  const lg = $("#heat-legend"); lg.replaceChildren();
+  const sw = el("span"); const a = el("span", "swatch"); a.style.background = "color-mix(in oklab, var(--series-1) 12%, var(--surface-1))";
+  const b = el("span", "swatch"); b.style.background = "var(--series-1)";
+  sw.append(a, document.createTextNode("few"), document.createTextNode(" → "), b, document.createTextNode("many events"));
+  lg.append(sw, el("span", null, "Outlined = the label's own topic"));
+}
+
+function renderTiers(s) {
+  const tb = $("#tiers"); tb.replaceChildren();
+  const h = el("tr"); for (const [t, n] of [["", 0], ["Events", 1], ["Pipeline accuracy", 1], ["Tier 1 alone", 1], ["Median time", 1]]) h.append(el("th", n ? "n" : "", t));
+  tb.append(h);
+  for (const t of s.tiers) {
+    const tr = el("tr"); tr.append(el("td", null, t.name));
+    const fmt = (a) => a.n ? pct(a.acc) + "  (" + a.right + "/" + a.n + ")" : "–";
+    const better = t.acc.n && t.tier1.n && t.acc.acc > t.tier1.acc;
+    for (const [v, cls] of [[String(t.n), "n"], [fmt(t.acc), "n" + (better ? " up" : "")], [fmt(t.tier1), "n"], [secs(t.latency), "n"]]) tr.append(el("td", cls, v));
+    tb.append(tr);
+  }
+}
+
+function matches(e, q, onlyBad) {
+  if (onlyBad && e.correct !== false && !(e.kind.startsWith("edge") && e.reason)) return false;
+  if (!q) return true;
+  return (e.text + " " + e.id + " " + (e.label || "") + " " + (e.expected || "")).toLowerCase().includes(q);
+}
+
+function eventNode(e, topic, now) {
+  const dlq = topic.kind === "dlq";
+  const node = el("div", "ev " + (dlq ? "none" : e.correct === true ? "ok" : e.correct === false ? "bad" : "none"));
+  node.append(el("div", "t", e.text === "" ? "(empty payload)" : e.text + (e.text_len > e.text.length ? "…" : "")));
+  const m = el("div", "m");
+  if (dlq) {
+    m.append(el("span", null, "reason: " + (e.reason || "unknown")), el("span", null, e.id));
+  } else {
+    m.append(el("span", "badge " + (e.source || ""), e.source === "reasoner" ? "reasoner" : "fast"));
+    m.append(el("span", null, "conf " + (e.confidence == null ? "–" : e.confidence.toFixed(2))), el("span", null, secs(e.latency)));
+    if (e.source === "reasoner" && e.tier1 && e.tier1 !== e.label) m.append(el("span", null, "tier 1 said: " + e.tier1));
+    if (e.low_confidence) m.append(el("span", null, "reasoner failed: tier 1’s answer"));
+    const mk = el("span", "mark");
+    if (e.correct === true) { mk.append(el("span", "g", "✓ "), document.createTextNode("matches label")); }
+    else if (e.correct === false) { mk.append(el("span", "c", "✗ "), document.createTextNode("labelled: " + e.expected)); }
+    else mk.append(document.createTextNode("unlabelled"));
+    m.append(mk);
+  }
+  if (e.kind && e.kind !== "clear") m.append(el("span", "kind", e.kind));
+  if (e.truncated) m.append(el("span", "kind", "context truncated"));
+  m.append(el("span", "kind", ago(e.decided_at, now)));
+  node.append(m);
+  return node;
+}
+
+function renderTopics(s) {
+  const q = $("#q").value.trim().toLowerCase(), onlyBad = $("#only-bad").checked;
+  const root = $("#topics"), scroll = {};
+  root.querySelectorAll(".list").forEach((l) => { scroll[l.dataset.stream] = l.scrollTop; });
+  root.replaceChildren();
+  for (const t of s.topics) {
+    const c = el("div", "card topic");
+    const h = el("header"); h.append(el("span", "name", t.name), el("span", "count", t.len + (t.len === 1 ? " event" : " events")));
+    const meta = el("div", "meta");
+    const parts = [t.stream];
+    if (t.accuracy && t.accuracy.n) parts.push(t.accuracy.right + "/" + t.accuracy.n + " match label");
+    if (t.group) parts.push(t.group.lag || t.group.pending ? "workers behind by " + (t.group.lag + t.group.pending) : "workers caught up");
+    meta.textContent = parts.join(" · ");
+    const list = el("div", "list"); list.dataset.stream = t.stream;
+    const shown = t.events.filter((e) => matches(e, q, onlyBad));
+    if (!shown.length) list.append(el("div", "empty", t.events.length ? "no events match the filter" : "nothing here yet"));
+    for (const e of shown) list.append(eventNode(e, t, s.now));
+    c.append(h, meta, list); root.append(c);
+    if (scroll[t.stream]) list.scrollTop = scroll[t.stream];
+  }
+}
+
+function renderTables(s) {
+  const a = $("#tbl-topics"); a.replaceChildren();
+  const h = el("tr"); for (const x of ["Topic", "Stream", "Events", "Matching label", "Workers behind"]) h.append(el("th", null, x)); a.append(h);
+  for (const t of s.topics) {
+    const tr = el("tr");
+    for (const v of [short(t), t.stream, String(t.len), t.accuracy && t.accuracy.n ? t.accuracy.right + "/" + t.accuracy.n : "–", t.group ? String(t.group.lag + t.group.pending) : "–"]) tr.append(el("td", null, v));
+    a.append(tr);
+  }
+  const m = $("#tbl-matrix"); m.replaceChildren();
+  const hm = el("tr"); hm.append(el("th", null, "Labelled as ↓ / ended in →")); for (const t of s.topics) hm.append(el("th", "n", short(t))); m.append(hm);
+  for (const r of s.config.options) {
+    const tr = el("tr"); tr.append(el("td", null, r));
+    for (const t of s.topics) tr.append(el("td", "n", String((s.matrix[r] || {})[t.stream] || 0)));
+    m.append(tr);
+  }
+}
+
+function pill(node, ok, text) {
+  node.replaceChildren(el("span", "icon " + (ok ? "" : "review"), ok ? "●" : "!"), document.createTextNode(text));
+  node.firstChild.style.color = ok ? "var(--good)" : "var(--warning)";
+}
+
+function render() {
+  const s = state; $("#error").replaceChildren();
+  if (s.error) { $("#error").append(el("div", "banner", s.error)); return; }
+  $("#question").textContent = "“" + s.config.question + "” · escalation below confidence " + s.config.theta;
+  const l = $("#live"); l.replaceChildren(el("span", "dot live"), el("span", null, "live"));
+  pill($("#p-llm"), s.decisionlm.ok === true, s.decisionlm.ok === null ? "decisionLM: checking" : s.decisionlm.ok ? "decisionLM: responding" : "decisionLM: no answer (busy thinking, or down)");
+  pill($("#p-ing"), s.ingestion.consumers > 0, s.ingestion.consumers + " decider" + (s.ingestion.consumers === 1 ? "" : "s") + " · " + s.totals.in_flight + " in flight");
+  renderTiles(s); renderBars(s); renderHeat(s); renderTiers(s); renderTopics(s); renderTables(s);
+}
+
+async function tick() {
+  if (paused) return;
+  try { state = await (await fetch("/api/state")).json(); render(); }
+  catch (e) {
+    $("#error").replaceChildren(el("div", "banner", "Dashboard server not reachable: " + e));
+    const l = $("#live"); l.replaceChildren(el("span", "dot"), el("span", null, "offline"));
+  }
+}
+$("#pause").onclick = () => { paused = !paused; $("#pause").textContent = paused ? "Resume" : "Pause";
+  const l = $("#live"); if (paused) l.replaceChildren(el("span", "dot"), el("span", null, "paused")); else tick(); };
+$("#theme").onclick = () => { const r = document.documentElement, dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const cur = r.dataset.theme || (dark ? "dark" : "light"); r.dataset.theme = cur === "dark" ? "light" : "dark"; };
+for (const id of ["#only-bad", "#q"]) $(id).addEventListener("input", () => state && !state.error && renderTopics(state));
+const forced = new URLSearchParams(location.search).get("theme");  // ?theme=light or ?theme=dark
+if (forced === "light" || forced === "dark") document.documentElement.dataset.theme = forced;
+setInterval(tick, 1500); tick();
+</script>
+</body>
+</html>
