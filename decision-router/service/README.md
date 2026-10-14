@@ -6,7 +6,7 @@ A local service that picks one answer from a fixed list of options, and says how
 - **Tier 2 (slow, about 20 s):** if tier 1 is not confident enough, the same model thinks the question through and answers. This is the `/api/decide` endpoint.
 
 Everything runs in-process with `llama-cpp-python` on your GPU. There is no Ollama server and no network call at inference time.
-A Redis Streams pipeline that feeds events through it lives in the sibling component [`../pipeline`](../pipeline/README.md).
+A Redis Streams pipeline that feeds events through it lives in the sibling component [`../pipeline`](../pipeline/README.md); its `start` command launches this server for you, so you only run `run.py` here to use the service on its own.
 Measured accuracy, calibration and speed are in [`RESULTS.md`](RESULTS.md); the raw experiments are in `bench/`.
 
 ---
@@ -77,7 +77,7 @@ prebuilt CUDA wheel, so no compiler or CUDA toolkit is needed. The model file is
 
 ```powershell
 .venv\Scripts\python run.py                 # http://127.0.0.1:5000
-$env:PORT = "5001"; .venv\Scripts\python run.py     # another port (the pipeline's config points at 5001)
+$env:PORT = "5001"; .venv\Scripts\python run.py     # another port (the pipeline's default URL is port 5001, and `start` launches this server there)
 ```
 
 It loads the model (printing the load time and how many layers went to the GPU), then serves. Open `http://127.0.0.1:5000/` for the web UI.

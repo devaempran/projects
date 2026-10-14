@@ -1,7 +1,7 @@
 # Confidence-routed decisions: design
 
 Status: **implemented.** `/api/decide` (the cascade) is in `src/decisionlm/`, and the Redis Streams pipeline that feeds it is in
-`../../pipeline`. This document records the design, why it is shaped this way, and what is still open.
+`../../pipeline`, which also starts this service for you (`python run.py start`). This document records the design, why it is shaped this way, and what is still open.
 Measured results are in [`../RESULTS.md`](../RESULTS.md).
 
 ## The idea

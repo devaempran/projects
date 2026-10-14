@@ -136,7 +136,7 @@ authentication and binds to localhost by default: set `host = "0.0.0.0"` only on
 python run.py inspect                       # stream lengths, groups, pending, lag, latest dead-letter reasons
 python run.py requeue --reason "decisionLM" # move dead-lettered events back to ingestion (--limit N, --dry-run)
 pip install pytest ruff                     # once
-pytest -m "not slow"                        # 57 tests, about 35 seconds, needs the Redis container
+pytest -m "not slow"                        # 80 tests, about a minute, needs Redis (127.0.0.1:6380 by default; REDIS_PORT overrides)
 pytest                                      # everything, including the 3-minute end-to-end run
 ruff check .                                # lint
 ```
@@ -188,6 +188,6 @@ config refuses `reclaim_idle_s <= timeout_s`. Keep `reclaim_idle_s` above (numbe
 
 ### What has been tested
 
-- A pytest suite: 57 fast tests (bad events, decisionLM failures and outages, duplicates, Redis problems, config mistakes, the command-line tools) and 3 slow end-to-end tests (1,000 events through two real decider processes, one killed while it holds un-acked messages: all 1,000 accounted for, none duplicated, nothing pending; a poison message dead-lettered). They use a mock decisionLM and a real Redis, with unique stream names per test.
+- A pytest suite: 80 fast tests (bad events, decisionLM failures and outages, duplicates, Redis problems, config mistakes, the command-line tools, the supervisor, the dashboard) and 4 slow end-to-end tests (1,000 events through two real decider processes, one killed while it holds un-acked messages: all 1,000 accounted for, none duplicated, nothing pending; a poison message dead-lettered; and `start` run as a user would, deciding events written before and after it began). They use a mock decisionLM and a real Redis, with unique stream names per test.
 - A live check sent 5 real events through the pipeline and the real decisionLM: all were routed and acknowledged, with nothing dead-lettered. The payloads were meaningless placeholders (all were escalated), so this shows the plumbing, not decision quality.
 - Not validated: accuracy on your real decisions (decisionLM's calibration comes from ARC, a science exam), long-running behaviour, and Redis Cluster.
