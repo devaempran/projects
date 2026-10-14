@@ -102,14 +102,14 @@ def plan(cfg: config.Config, service_running: bool, stop_file: str | None = None
         children.append(Child("decisionLM", [service_python(cfg), "run.py"], cwd=cfg.service_dir, grace_s=15,
                               env={"PORT": str(urlsplit(cfg.url).port or 5001), "PYTHONUNBUFFERED": "1"}))
     for i in range(1, cfg.deciders + 1):
-        children.append(Child(f"decider-{i}", [sys.executable, RUN_PY, "decider", f"decider-{i}"], env=env,
+        children.append(Child(f"decider-{i}", [sys.executable, RUN_PY, "decider", f"{cfg.node_name}-decider-{i}"], env=env,
                               stop_file=stop_file, grace_s=cfg.shutdown_grace_s))
     if cfg.dashboard_enabled:
         children.append(Child("dashboard", [sys.executable, RUN_PY, "dashboard"], env=env, stop_file=stop_file, grace_s=10))
     if cfg.workers:
         for stream in cfg.decision_streams:
-            children.append(Child(f"worker[{stream}]", [sys.executable, RUN_PY, "worker", stream, f"worker-{stream}"], env=env,
-                                  stop_file=stop_file, grace_s=cfg.shutdown_grace_s))
+            argv = [sys.executable, RUN_PY, "worker", stream, f"{cfg.node_name}-worker-{stream}"]
+            children.append(Child(f"worker[{stream}]", argv, env=env, stop_file=stop_file, grace_s=cfg.shutdown_grace_s))
     return children
 
 

@@ -32,6 +32,7 @@ stream = "decision:option_2"
 # deciders = 1             # decider processes (decisionLM serves one request at a time, so more only helps with retries)
 # workers = false          # true: also run a logging consumer per output stream (normally you consume them yourself)
 # status_every_s = 30      # progress line interval (0 = off)
+# node_name = ""           # prefix of this node's consumer names (default: the hostname); must be unique per node
 #
 # [dashboard]             # the live view at http://127.0.0.1:5055 (read-only)
 # enabled = true           # false: do not serve it

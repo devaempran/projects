@@ -28,6 +28,23 @@ def minimal_cfg(tmp_path):
     return build(tmp_path, MINIMAL + "[run]\ndeciders = 2\nworkers = true\n[service]\nstart = false\n")
 
 
+def test_consumer_names_carry_the_node_name_so_nodes_never_collide(tmp_path):
+    def argv_names(node):
+        cfg = build(tmp_path, MINIMAL + f'[run]\nnode_name = "{node}"\nworkers = true\n[service]\nstart = false\n')
+        return [c.argv[-1] for c in supervisor.plan(cfg, True) if c.name.startswith(("decider", "worker"))]
+
+    a, b = argv_names("node-a"), argv_names("node-b")
+    assert a[0] == "node-a-decider-1" and not set(a) & set(b)
+
+
+def test_node_name_defaults_to_the_hostname_and_rejects_spaces(tmp_path):
+    import socket
+
+    assert build(tmp_path, MINIMAL).node_name == socket.gethostname()
+    with pytest.raises(config.ConfigError, match="node_name"):
+        build(tmp_path, MINIMAL + '[run]\nnode_name = "a b"\n')
+
+
 def test_plan_runs_the_configured_deciders_and_workers(minimal_cfg):
     names = [c.name for c in supervisor.plan(minimal_cfg, service_running=False)]
     assert names == ["decider-1", "decider-2", "dashboard", "worker[decision:a]", "worker[decision:b]", "worker[decision:review]"]

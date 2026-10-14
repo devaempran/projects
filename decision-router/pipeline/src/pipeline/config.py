@@ -6,6 +6,7 @@ message naming the setting, never a bare KeyError."""
 from __future__ import annotations
 
 import os
+import socket
 import tomllib
 from dataclasses import dataclass
 from typing import Callable, Mapping
@@ -67,6 +68,7 @@ class Config:
     dedupe_ttl_s: int
     # run (what `start` supervises)
     deciders: int
+    node_name: str
     workers: bool
     status_every_s: float
     shutdown_grace_s: float
@@ -181,6 +183,7 @@ def load(path: str | None = None, environ: Mapping[str, str] | None = None) -> C
         health_poll_s=get("reliability", "health_poll_s", float, 5),
         dedupe_ttl_s=get("reliability", "dedupe_ttl_s", int, 86400),
         deciders=get("run", "deciders", int, 1),
+        node_name=get("run", "node_name", str, "") or socket.gethostname(),
         workers=get("run", "workers", bool, False),
         status_every_s=get("run", "status_every_s", float, 30),
         shutdown_grace_s=get("run", "shutdown_grace_s", float, 150),
@@ -227,6 +230,8 @@ def validate(c: Config) -> None:
         raise ConfigError("ingestion/dlq streams must differ from the decision streams")
     if c.batch_size < 1 or c.max_deliveries < 1 or c.retries < 0 or c.maxlen < 1 or c.block_ms < 0 or c.dedupe_ttl_s < 0:
         raise ConfigError("batch_size, max_deliveries, maxlen must be >= 1 and retries, block_ms, dedupe_ttl_s >= 0")
+    if not c.node_name.strip() or any(ch.isspace() for ch in c.node_name):
+        raise ConfigError("[run] node_name must be non-empty text without spaces")
     if c.deciders < 1 or c.status_every_s < 0 or c.shutdown_grace_s < 0 or c.db < 0:
         raise ConfigError("[run] deciders must be >= 1, and status_every_s, shutdown_grace_s and [redis] db must be >= 0")
     if not 0 < c.dashboard_port < 65536 or not c.dashboard_host.strip():

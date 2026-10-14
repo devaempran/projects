@@ -50,7 +50,7 @@ Commands: `python run.py start | setup | producer | decider NAME | worker STREAM
 | setting | meaning |
 |---|---|
 | `[redis] host, port, db, password` | Redis address (env `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` override). Default `127.0.0.1:6379`. |
-| `[run] deciders, workers, status_every_s, shutdown_grace_s` | what `start` runs: decider count (1), a logging worker per output stream (false), status line interval (30), how long a decider may take to finish its message on shutdown (150) |
+| `[run] deciders, workers, node_name, status_every_s, shutdown_grace_s` | what `start` runs: decider count (1), this node's name for consumer names (the hostname), a logging worker per output stream (false), status line interval (30), how long a decider may take to finish its message on shutdown (150) |
 | `[dashboard] enabled, host, port, label_field` | the live dashboard: on or off (true), address (`127.0.0.1:5055`), and an optional event field holding a ground-truth label, which turns on the accuracy panels |
 | `[service] start, dir, python` | whether `start` launches decisionLM (true, only when the URL is local and nothing answers), its folder (`../../service` relative to the config) and the interpreter (its `.venv`, else the current one) |
 | `[ingestion] stream, group, dlq_stream, maxlen` | main topic name, its consumer group, dead-letter stream, approximate cap on every stream |
@@ -96,6 +96,18 @@ You do not need to start it before your data source: groups begin at the start o
 If decisionLM is down or still loading, events wait (nothing is lost, no attempt is used up) until it answers.
 
 Running the parts yourself (`setup`, `decider NAME`, `worker STREAM`) is still possible and is what `start` does for you. Each needs a unique name.
+
+### Running on several nodes
+
+Run `start` on each node with the same config: Redis gives each event to one decider, and a dead node's messages are reclaimed by the others. Consumer names are
+prefixed with `[run] node_name` (the hostname by default), so nodes never collide; set it explicitly if two nodes share a hostname.
+
+- **decisionLM is the limit, not the pipeline.** One instance serves one request at a time. Scale by running more instances (one per GPU) and pointing each node's
+  `[decision] url` at one of them, with `[service] start = false` on nodes that have no GPU. One config holds one URL, so spread nodes across instances or put a load balancer in front.
+- **One dashboard is enough:** set `[dashboard] enabled = false` on the other nodes, since each dashboard reads up to 5,000 entries per topic every second.
+- **Redis latency** adds about one round trip to each read and each forward, which is small next to a decision (about 0.1 s on the fast path, 20 s escalated). Keep Redis in the same
+  region or network as the nodes, and if the round trip is large, run two or three deciders per node so one's Redis wait overlaps another's decision. Keep `batch_size = 1`
+  (see "Reclaim versus latency").
 
 ### Feed it your data
 
