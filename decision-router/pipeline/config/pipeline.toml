@@ -1,0 +1,51 @@
+# decision-router config. Fill in the question and the options, then run:   python run.py start
+#
+# Everything else has a working default. Override the file with `--config PATH` or PIPELINE_CONFIG=<path>;
+# REDIS_HOST / REDIS_PORT / REDIS_PASSWORD in the environment override [redis].
+
+[redis]
+host = "127.0.0.1"
+port = 6379              # the default Redis port
+# password = ""          # or set REDIS_PASSWORD
+# db = 0
+
+[ingestion]
+stream = "ingestion"     # THE topic you write to. Each event needs the field named by context_field (below).
+
+[decision]
+# The model reads the event's `context_field` as the Context, answers this Question about it, and picks one option.
+question = "<REPLACE: the question to ask about every event>"
+context_field = "payload"
+
+# One table per option, 2 to 26. `name` is the text the model reads, so make it descriptive.
+# `stream` is the topic that receives events decided as this option (default: "decision:<name>").
+[[options]]
+name = "<REPLACE: first option>"
+stream = "decision:option_1"
+
+[[options]]
+name = "<REPLACE: second option>"
+stream = "decision:option_2"
+
+# --- optional ------------------------------------------------------------------------------------------------
+# [run]
+# deciders = 1             # decider processes (decisionLM serves one request at a time, so more only helps with retries)
+# workers = false          # true: also run a logging consumer per output stream (normally you consume them yourself)
+# status_every_s = 30      # progress line interval (0 = off)
+#
+# [dashboard]             # the live view at http://127.0.0.1:5055 (read-only)
+# enabled = true           # false: do not serve it
+# port = 5055
+# host = "127.0.0.1"       # "0.0.0.0" to share it (no authentication)
+# label_field = ""         # an event field holding the true label: adds accuracy panels
+#
+# [service]                # the decisionLM server. `start` launches it when [decision] url is local and nothing answers there.
+# start = true             # false: you run decisionLM yourself (or it runs elsewhere)
+# dir = "../../service"    # relative to this file
+# python = ""              # interpreter for the service (default: <dir>/.venv, else the current one)
+#
+# [decision] more:  url, theta (0.85), max_context_chars (8000), review_stream ("decision:review"; "" = off), model_version,
+#                   max_think_tokens, max_think_seconds, timeout_s
+# [ingestion] more: group ("deciders"), dlq_stream ("<stream>:dlq"), maxlen (100000)
+# [reliability]:    batch_size, block_ms, reclaim_idle_s, reclaim_every_s, max_deliveries, retries, retry_backoff_s,
+#                   health_poll_s, dedupe_ttl_s       (see the README before changing these)

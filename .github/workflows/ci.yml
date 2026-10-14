@@ -1,18 +1,18 @@
-name: decisionLM and pipeline
+name: decision-router
 
 on:
   push:
-    paths: ["decisionLM/**", "redis-streams-pipeline/**", ".github/workflows/decisionlm.yml"]
+    paths: ["decision-router/**", ".github/workflows/ci.yml"]
   pull_request:
-    paths: ["decisionLM/**", "redis-streams-pipeline/**", ".github/workflows/decisionlm.yml"]
+    paths: ["decision-router/**", ".github/workflows/ci.yml"]
 
 jobs:
-  decisionlm:
+  service:
     # The API tests fake the model, so they need neither a GPU nor llama-cpp-python.
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: decisionLM
+        working-directory: decision-router/service
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: redis-streams-pipeline
+        working-directory: decision-router/pipeline
     services:
       redis:
         image: redis:7

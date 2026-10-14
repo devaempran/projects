@@ -29,7 +29,7 @@ Hardware and software: RTX 5060 Ti (16 GB), `llama-cpp-python` 0.3.36 (CUDA 12.4
   model's probability mass; if tier 2 fails it returns tier 1's answer flagged `low_confidence`.
 - **Pipeline:** a Redis Streams service that reads events, calls `/api/decide` with a fixed question and options, and routes each event to a stream per option.
 
-Code layout is in the READMEs: [`decisionLM`](README.md) and [`redis-streams-pipeline`](../redis-streams-pipeline/README.md).
+Code layout is in the READMEs: [`service`](README.md) and [`pipeline`](../pipeline/README.md).
 
 ## 2. How it was evaluated
 
@@ -224,12 +224,12 @@ dead-lettered. These tests use a mock decisionLM. A separate live run sent 5 rea
 
 ### Support-ticket demo (82 labelled tickets plus edge cases, live service, 2026-10-12)
 
-`redis-streams-pipeline/demo/` publishes labelled tickets through the whole pipeline to the real decisionLM and shows where each lands on a live dashboard. 92 events were published: 82 tickets,
+`pipeline/demo/` publishes labelled tickets through the whole pipeline to the real decisionLM and shows where each lands on a live dashboard. 92 events were published: 82 tickets,
 5 edge cases and 5 re-sent duplicates. Result: 84 decided, 3 dead-lettered (empty, blank and missing payload, each with a reason), 5 duplicates dropped; nothing lost or left pending.
 The 20,000-character ticket was truncated and routed correctly. Accuracy against the author's labels: pipeline 72/84 (85.7%), tier 1 alone 74/84 (88.1%). Tier 1's fast path (58 events, confidence 0.85 or more) scored 55/58;
 31% of events escalated. **On the 26 escalated events the reasoner did not help**: it fixed 3 and broke 5 (tier 1 alone 19/26, pipeline 17/26), the opposite of the ARC result. With 26 events this difference
 is not statistically meaningful, and several labels are debatable (billing against sales), but it is a clear warning that the ARC threshold and the benefit of thinking do not transfer automatically. It also showed that the reasoner followed an injected instruction that tier 1 resisted.
-Details and the dashboard: `redis-streams-pipeline/demo/README.md`.
+Details and the dashboard: `pipeline/demo/README.md`.
 
 ## 7. Limitations and threats to validity
 

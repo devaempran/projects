@@ -18,7 +18,7 @@ def load(tmp_path, text, environ=None):
 
 def test_the_shipped_configs_load():
     for path in ("config/pipeline.toml", "config/examples/support_tickets.toml", "demo/pipeline.demo.toml"):
-        assert len(config.load(os.path.join(ROOT, path), environ={}).options) >= 3
+        assert len(config.load(os.path.join(ROOT, path), environ={}).options) >= 2
 
 
 def test_derived_values():
@@ -35,7 +35,6 @@ def test_environment_overrides_the_redis_address(tmp_path):
 
 @pytest.mark.parametrize("old,new,message", [
     ('question = "Which one?"', "", "[decision] question"),
-    ("[reliability]", "[reliabilty]", "[reliability]"),
     ("theta = 0.85", "theta = 1.5", "theta"),
     ("theta = 0.85", 'theta = "high"', "theta"),
     ('name = "beta"', 'name = "alpha"', "unique"),
@@ -69,3 +68,39 @@ def test_bad_redis_port_in_the_environment_is_named(tmp_path):
 def test_missing_file_is_reported():
     with pytest.raises(config.ConfigError, match="not found"):
         config.load("nope.toml", environ={})
+
+
+MINIMAL = """[decision]
+question = "Which one?"
+[[options]]
+name = "alpha"
+[[options]]
+name = "beta"
+"""
+
+
+def test_a_minimal_config_needs_only_a_question_and_options(tmp_path):
+    cfg = load(tmp_path, MINIMAL)
+    assert (cfg.ingestion, cfg.dlq, cfg.port, cfg.deciders, cfg.workers) == ("ingestion", "ingestion:dlq", 6379, 1, False)
+    assert cfg.option_streams == {"alpha": "decision:alpha", "beta": "decision:beta"} and cfg.review_stream == "decision:review"
+    assert cfg.service_start and not cfg.has_placeholders
+
+
+def test_the_shipped_template_is_flagged_as_unfinished():
+    assert config.load(os.path.join(ROOT, "config", "pipeline.toml"), environ={}).has_placeholders
+
+
+def test_a_relative_service_dir_is_relative_to_the_config_file(tmp_path):
+    cfg = load(tmp_path, MINIMAL + '[service]\ndir = "svc"\n')
+    assert cfg.service_dir == str(tmp_path / "svc")
+
+
+def test_redis_password_comes_from_the_environment(tmp_path):
+    assert load(tmp_path, MINIMAL, {"REDIS_PASSWORD": "s3cret"}).password == "s3cret"
+
+
+def test_run_settings_are_validated(tmp_path):
+    with pytest.raises(config.ConfigError, match="deciders"):
+        load(tmp_path, MINIMAL + "[run]\ndeciders = 0\n")
+    with pytest.raises(config.ConfigError, match="workers"):
+        load(tmp_path, MINIMAL + '[run]\nworkers = "yes"\n')

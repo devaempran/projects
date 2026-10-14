@@ -1,5 +1,7 @@
 """Command dispatcher:  python run.py <command> [args]   (or PYTHONPATH=src python -m pipeline <command> [args])
 
+  start                 run everything: check config, create streams, start decisionLM and the deciders, keep them alive
+  dashboard             serve the live dashboard on its own   (--host H --port P)
   setup                 create streams and consumer groups from config/pipeline.toml
   producer              publish test events           (--count N --rate R)
   decider NAME          decide ingestion events       (--theta T)
@@ -10,8 +12,8 @@
 import importlib
 import sys
 
-COMMANDS = {"setup": "setup_groups", "producer": "producer", "decider": "decider", "worker": "worker",
-            "inspect": "inspect_streams", "requeue": "requeue_dlq"}
+COMMANDS = {"start": "supervisor", "dashboard": "dashboard.server", "setup": "setup_groups", "producer": "producer",
+            "decider": "decider", "worker": "worker", "inspect": "inspect_streams", "requeue": "requeue_dlq"}
 
 
 def main(argv=None):

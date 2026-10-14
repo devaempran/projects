@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     r = config.connect(cfg)
-    config.ensure_groups(r, cfg)  # groups are created at '$', so they must exist before the first event
+    config.ensure_groups(r, cfg)
     start, sent = time.time(), 0
     try:
         while sent < args.count:

@@ -2,14 +2,17 @@
 and XAUTOCLAIM of messages abandoned by dead consumers."""
 from __future__ import annotations
 
+import os
 import signal
 import threading
+import time
 from typing import Callable
 
 import redis
 
 from pipeline import config
 
+STOP_FILE_ENV = "PIPELINE_STOP_FILE"
 stop = threading.Event()  # process-wide: set by the signal handlers, checked by every loop
 
 
@@ -25,6 +28,20 @@ def install_signal_handlers(label: str) -> None:
     for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), handler)
+    stop_file = os.environ.get(STOP_FILE_ENV)
+    if stop_file:
+        threading.Thread(target=_watch_stop_file, args=(stop_file, label), daemon=True).start()
+
+
+def _watch_stop_file(path: str, label: str) -> None:
+    """The supervisor asks its children to stop by creating this file: unlike console signals, it works the same
+    on every platform and whether or not the child has a console."""
+    while not stop.is_set():
+        if os.path.exists(path):
+            stop.set()
+            print(f"[{label}] stopping after the current message", flush=True)
+            return
+        time.sleep(0.25)
 
 
 def run_loop(r: redis.Redis, cfg: config.Config, step: Callable[[], None], label: str) -> None:

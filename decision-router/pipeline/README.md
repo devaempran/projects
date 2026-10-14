@@ -1,6 +1,6 @@
 # Redis Streams pipeline for decisionLM
 
-Takes events from a Redis stream, asks [decisionLM](../decisionLM/README.md) to choose one of a fixed set of options for each, and routes the
+Takes events from a Redis stream, asks [decisionLM](../service/README.md) to choose one of a fixed set of options for each, and routes the
 event to a stream named for the option it chose. Everything (the question, the options, their streams, thresholds) is set in one config file.
 
 ```
@@ -18,12 +18,14 @@ event to a stream named for the option it chose. Everything (the question, the o
 ## 1. Structure
 
 ```
-redis-streams-pipeline/
+pipeline/
 ├── run.py                       entry point:  python run.py <command>
-├── config/pipeline.toml         all settings (a placeholder to fill in); the only file you normally edit
+├── config/pipeline.toml         a template to fill in: the question, the options and (if needed) the Redis address
 ├── config/examples/             a worked example config
 ├── src/pipeline/
 │   ├── config.py                an immutable Config object from config.load(); validation; creates streams and groups
+│   ├── dashboard/               live dashboard (server.py + static/index.html), served by `start` or `python run.py dashboard`
+│   ├── supervisor.py            `start`: checks, creates streams, launches decisionLM, runs and restarts the deciders, graceful stop
 │   ├── decider.py               reads ingestion, calls decisionLM, routes, retries, dead-letters, reclaims
 │   ├── decisionlm_client.py     HTTP client for /api/decide and its failure classes
 │   ├── runtime.py               graceful shutdown, recovery from Redis problems, XAUTOCLAIM
@@ -34,7 +36,7 @@ redis-streams-pipeline/
 │   └── requeue_dlq.py           move dead-lettered events back to ingestion
 ├── demo/                        end-to-end demo: labelled support tickets, a publisher and a live dashboard (demo/README.md)
 ├── tests/                       pytest suite; every test gets its own uniquely named streams and mock port
-│   ├── test_config.py, test_decider.py, test_runtime.py, test_worker.py, test_tools.py
+│   ├── test_config.py, test_decider.py, test_runtime.py, test_worker.py, test_tools.py, test_supervisor.py
 │   ├── test_end_to_end.py       slow: 1,000 events, kill a decider mid-run, poison message (about 3 minutes)
 │   └── mock_decisionlm.py       stand-in for decisionLM used by the tests
 ├── requirements.txt             redis>=5.0
@@ -42,13 +44,16 @@ redis-streams-pipeline/
 └── LICENSE                      MIT
 ```
 
-Commands: `python run.py setup | producer | decider NAME | worker STREAM [NAME] | inspect | requeue` (`--help` lists them).
+Commands: `python run.py start | setup | producer | decider NAME | worker STREAM [NAME] | inspect | requeue` (`--help` lists them).
 
 ### Configuration (`config/pipeline.toml`)
 
 | setting | meaning |
 |---|---|
-| `[redis] host, port` | Redis address (env `REDIS_HOST`, `REDIS_PORT` override). Port is 6380 because 6379 is used by another project here. |
+| `[redis] host, port, db, password` | Redis address (env `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` override). Default `127.0.0.1:6379`. |
+| `[run] deciders, workers, status_every_s, shutdown_grace_s` | what `start` runs: decider count (1), a logging worker per output stream (false), status line interval (30), how long a decider may take to finish its message on shutdown (150) |
+| `[dashboard] enabled, host, port, label_field` | the live dashboard: on or off (true), address (`127.0.0.1:5055`), and an optional event field holding a ground-truth label, which turns on the accuracy panels |
+| `[service] start, dir, python` | whether `start` launches decisionLM (true, only when the URL is local and nothing answers), its folder (`../../service` relative to the config) and the interpreter (its `.venv`, else the current one) |
 | `[ingestion] stream, group, dlq_stream, maxlen` | main topic name, its consumer group, dead-letter stream, approximate cap on every stream |
 | `[decision] url, health_url` | decisionLM's `/api/decide`; its health endpoint (default derived from `url`) |
 | `[decision] question` | sent as `Question`, identical for every event |
@@ -61,7 +66,7 @@ Commands: `python run.py setup | producer | decider NAME | worker STREAM [NAME] 
 | `[reliability] reclaim_idle_s, reclaim_every_s, max_deliveries` | when abandoned messages are reclaimed (must exceed `timeout_s`, enforced); how often; deliveries before the DLQ |
 | `[reliability] retries, retry_backoff_s, health_poll_s, dedupe_ttl_s` | in-process retries and backoff; outage polling; how long an event `id` is remembered |
 
-A bad setting stops start-up with an error naming it. The streams and groups for ingestion, every option and the review stream are created from this
+Only `[decision] question` and `[[options]]` are required; every other setting has a default. A bad setting stops start-up with an error naming it. The streams and groups for ingestion, every option and the review stream are created from this
 file by `python run.py setup` and at the start of every command. Removing an option does not delete its stream. `config/pipeline.toml` ships as a **placeholder**: replace the question and options before running real data.
 `config/examples/support_tickets.toml` is a filled-in example (point at it with `PIPELINE_CONFIG`).
 
@@ -72,33 +77,26 @@ file by `python run.py setup` and at the start of every command. Removing an opt
 ### Prerequisites
 
 - Python 3.11+ and `pip install -r requirements.txt`.
-- Redis, e.g. in Docker:
-  ```powershell
-  docker run -d --name redis -p 6380:6379 redis:latest --appendonly yes
-  docker exec redis redis-cli ping            # PONG
-  ```
-- decisionLM running and reachable at `[decision] url` (`$env:PORT = "5001"; .venv\Scripts\python run.py` in `decisionLM`). It needs a GPU and takes about a minute to load.
+- Redis, anywhere you can reach (a Docker one-liner: `docker run -d --name redis -p 6379:6379 redis:latest --appendonly yes`).
+- The decisionLM service set up once (`service/README.md`). It needs a GPU; `start` launches it for you.
 
-### Start everything
+### Start everything: one command
 
-First edit `config/pipeline.toml` (it ships as a placeholder): set the question and the options. Or try the worked example with `$env:PIPELINE_CONFIG = "config/examples/support_tickets.toml"`.
-
-Start the deciders and workers **before** your data source: consumer groups begin at the end of the stream, so events written earlier are not delivered to a group created later.
+1. Copy `config/pipeline.toml`, set `[decision] question` and the `[[options]]` (and `[redis]` if Redis is not on `127.0.0.1:6379`).
+2. Run, from this folder (or from the project root, where `python run.py start` does the same):
 
 ```powershell
-python run.py setup
-$d = $PWD.Path
-function T($cmd) { Start-Process powershell -ArgumentList '-NoExit','-Command',"cd '$d'; $cmd" }
-
-T 'python run.py decider decider-1'
-T 'python run.py decider decider-2'
-$env:PYTHONPATH = "$d\src"
-python -c "from pipeline import config; print('\n'.join(config.DECISION_STREAMS))" | ForEach-Object { T "python run.py worker $_" }
-Start-Sleep 3
-T 'python run.py producer --count 1000 --rate 5'      # test data; use your own source in real use
+python run.py start --config my.toml
 ```
 
-Each decider and worker needs a unique name. Ctrl+C finishes the message in flight and exits (press again to abort).
+`start` checks the config and Redis, creates every stream and consumer group, launches decisionLM if `[decision] url` is local and nothing answers
+there, runs `[run] deciders` decider processes, restarts anything that dies, and prints a status line every 30 seconds
+(`in-queue=… deciding=… routed=… dead-lettered=…`). Ctrl+C lets each decider finish the message in flight, then stops everything.
+
+You do not need to start it before your data source: groups begin at the start of the stream, so events written earlier are decided too.
+If decisionLM is down or still loading, events wait (nothing is lost, no attempt is used up) until it answers.
+
+Running the parts yourself (`setup`, `decider NAME`, `worker STREAM`) is still possible and is what `start` does for you. Each needs a unique name.
 
 ### Feed it your data
 
@@ -122,6 +120,16 @@ Replace `process` in `worker.py` (or run your own consumer group on those stream
 
 `demo/` publishes labelled support tickets through the pipeline and the real decisionLM and shows on a live dashboard which topic each lands in, and whether that matched the label.
 See [`demo/README.md`](demo/README.md).
+
+### The dashboard
+
+`start` serves a live, read-only dashboard at `http://127.0.0.1:5055` (`[dashboard] enabled = false` turns it off; `python run.py dashboard` runs it alone).
+It is built from your config, so it works with any question and options: events per topic, what is waiting, throughput, tier 1 against the reasoner,
+confidence and timing, dead letters, and the newest events in every topic with search. Statistics cover the newest 5,000 events per topic.
+
+If your events carry a ground-truth label (say, from a test set), name that field in `[dashboard] label_field` and it also shows accuracy against the label,
+tier 1's accuracy alone, a grid of label against landing topic, and an "only mismatches" filter. Without it those panels are hidden. The dashboard has no
+authentication and binds to localhost by default: set `host = "0.0.0.0"` only on a network you trust.
 
 ### Operate
 

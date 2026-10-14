@@ -1,6 +1,5 @@
-# Pipeline config for the demo: routing customer-support tickets. Used by demo/publisher and demo/dashboard
-# (they default to this file) and by the deciders/workers when started with
-#   PIPELINE_CONFIG=demo/pipeline.demo.toml python run.py decider decider-1
+# Pipeline config for the demo: routing customer-support tickets. Run it all with
+#   python run.py start --config demo/pipeline.demo.toml          (the publisher defaults to this file too)
 # All stream names start with "demo:" so the demo never touches other streams in the same Redis.
 #
 # Event shape: XADD demo:tickets * id <ticket id> payload "<ticket text>" ts <unix time>
@@ -49,6 +48,13 @@ stream = "demo:account"
 [[options]]
 name = "general feedback or complaint"
 stream = "demo:feedback"
+
+[dashboard]
+label_field = "expected"   # the publisher writes the author's label here; it turns on the dashboard's accuracy panels
+
+[run]
+deciders = 2
+workers = true             # a logging consumer per topic, as the demo shows them
 
 [reliability]
 batch_size = 1

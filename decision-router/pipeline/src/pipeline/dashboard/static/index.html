@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pipeline dashboard</title>
+<title>decision-router dashboard</title>
 <style>
   :root {
     color-scheme: light;
@@ -95,6 +95,7 @@
   .ev .t { font-size: 13px; overflow-wrap: anywhere; }
   .ev .m { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 5px; color: var(--text-secondary); font-size: 12px; align-items: center; }
   .ev .m .kind { color: var(--text-muted); }
+  [hidden] { display: none !important; }
   .badge { border: 1px solid var(--border); border-radius: 4px; padding: 0 6px; font-size: 11.5px; }
   .badge.reasoner { border-color: var(--series-1); }
   .mark { font-weight: 600; }
@@ -110,7 +111,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>Pipeline dashboard</h1>
+    <h1>decision-router</h1>
     <span class="sub" id="question"></span>
     <span class="spacer"></span>
     <span class="pill" id="live"><span class="dot"></span><span>connecting</span></span>
@@ -120,7 +121,7 @@
     <span class="pill" id="p-llm"></span>
     <span class="pill" id="p-ing"></span>
     <span class="spacer"></span>
-    <label><input type="checkbox" id="only-bad"> only mismatches</label>
+    <label id="only-bad-wrap" hidden><input type="checkbox" id="only-bad"> only mismatches</label>
     <input type="search" id="q" placeholder="filter event text or id">
     <button id="pause">Pause</button>
     <button id="theme">Theme</button>
@@ -129,15 +130,15 @@
 
   <div class="tiles" id="tiles"></div>
 
-  <div class="two">
+  <div class="two" id="two">
     <div class="card">
       <h2>Events per topic</h2>
       <div class="note">How many events ended up in each downstream topic.</div>
       <div class="bars" id="bars"></div>
     </div>
-    <div class="card">
-      <h2>Where each labelled ticket ended up</h2>
-      <div class="note">Rows: the label the ticket was written with. Columns: the topic it landed in. Outlined cells are the correct topic.</div>
+    <div class="card" id="heat-card" hidden>
+      <h2>Where each labelled event ended up</h2>
+      <div class="note">Rows: the label the event arrived with. Columns: the topic it landed in. Outlined cells are the correct topic.</div>
       <table class="heat" id="heat"></table>
       <div class="legend" id="heat-legend"></div>
     </div>
@@ -145,16 +146,17 @@
 
   <div class="card">
     <h2>What the thinking step added</h2>
-    <div class="note">Tier 1 answers fast; low-confidence events are escalated to the reasoner. "Tier 1 alone" is what tier 1 would have scored on the same events.</div>
+    <div class="note">Tier 1 answers fast; low-confidence events are escalated to the reasoner.<span id="tier-note"></span></div>
     <table class="plain" id="tiers"></table>
   </div>
 
   <div class="topics" id="topics"></div>
 
+  <div class="sub" id="window-note" style="margin-top:12px" hidden>Statistics cover the newest 5,000 events in each topic.</div>
   <details>
     <summary>Table view of the charts</summary>
     <table class="plain" id="tbl-topics" style="margin-top:10px"></table>
-    <table class="plain" id="tbl-matrix" style="margin-top:14px"></table>
+    <table class="plain" id="tbl-matrix" style="margin-top:14px" hidden></table>
   </details>
 </div>
 <div id="tip" role="tooltip"></div>
@@ -193,15 +195,21 @@ function tile(value, label, detail) {
 }
 
 function renderTiles(s) {
-  const T = s.totals, all = s.tiers[0];
-  const tiles = $("#tiles"); tiles.replaceChildren(
-    tile(String(s.ingestion.len), "Events published", "to " + s.config.ingestion),
+  const T = s.totals, all = s.tiers[0], labelled = !!s.config.label_field;
+  const tiles = [
+    tile(String(s.ingestion.len), "In the ingestion stream", s.config.ingestion),
     tile(String(T.decided), "Decided", T.in_flight ? T.in_flight + " still in flight" : "nothing waiting"),
-    tile(pct(all.acc.acc), "Accuracy vs. label", all.acc.n ? all.acc.right + " of " + all.acc.n + " labelled events" : "no labelled events yet"),
-    tile(pct(all.tier1.acc), "Tier 1 alone", all.tier1.n ? "on the same " + all.tier1.n + " events" : ""),
-    tile(T.decided ? pct(T.escalated / T.decided, 0) : "–", "Escalated to the reasoner", T.escalated + " of " + T.decided + " decided"),
-    tile(String(T.dead), "Dead letters", T.dead ? "could not be decided" : "none"),
-  );
+    tile(String(T.per_minute), "Decided in the last minute", "live throughput"),
+  ];
+  if (labelled) {
+    tiles.push(tile(pct(all.acc.acc), "Accuracy vs. label", all.acc.n ? all.acc.right + " of " + all.acc.n + " labelled events" : "no labelled events yet"),
+               tile(pct(all.tier1.acc), "Tier 1 alone", all.tier1.n ? "on the same " + all.tier1.n + " events" : ""));
+  } else {
+    tiles.push(tile(all.confidence == null ? "–" : all.confidence.toFixed(2), "Median confidence", "across decided events"));
+  }
+  tiles.push(tile(T.decided ? pct(T.escalated / T.decided, 0) : "–", "Escalated to the reasoner", T.escalated + " of " + T.decided + " decided"),
+             tile(String(T.dead), "Dead letters", T.dead ? "could not be decided" : "none"));
+  $("#tiles").replaceChildren(...tiles);
 }
 
 function renderBars(s) {
@@ -228,7 +236,7 @@ function renderBars(s) {
 
 function renderHeat(s) {
   const heat = $("#heat"); heat.replaceChildren();
-  const cols = s.topics, rows = s.config.options;
+  const cols = s.topics, rows = s.label_rows;
   let max = 1; for (const r of rows) for (const c of cols) max = Math.max(max, (s.matrix[r] || {})[c.stream] || 0);
   const head = el("tr"); head.append(el("th"));
   for (const c of cols) head.append(el("th", null, short(c)));
@@ -257,28 +265,35 @@ function renderHeat(s) {
 }
 
 function renderTiers(s) {
+  const labelled = !!s.config.label_field;
+  $("#tier-note").textContent = labelled ? ' "Tier 1 alone" is what tier 1 would have scored on the same events.' : "";
   const tb = $("#tiers"); tb.replaceChildren();
-  const h = el("tr"); for (const [t, n] of [["", 0], ["Events", 1], ["Pipeline accuracy", 1], ["Tier 1 alone", 1], ["Median time", 1]]) h.append(el("th", n ? "n" : "", t));
+  const cols = [["", 0], ["Events", 1]].concat(labelled ? [["Pipeline accuracy", 1], ["Tier 1 alone", 1]] : [])
+    .concat([["Median confidence", 1], ["Median time", 1]]);
+  const h = el("tr"); for (const [t, n] of cols) h.append(el("th", n ? "n" : "", t));
   tb.append(h);
   for (const t of s.tiers) {
     const tr = el("tr"); tr.append(el("td", null, t.name));
     const fmt = (a) => a.n ? pct(a.acc) + "  (" + a.right + "/" + a.n + ")" : "–";
     const better = t.acc.n && t.tier1.n && t.acc.acc > t.tier1.acc;
-    for (const [v, cls] of [[String(t.n), "n"], [fmt(t.acc), "n" + (better ? " up" : "")], [fmt(t.tier1), "n"], [secs(t.latency), "n"]]) tr.append(el("td", cls, v));
+    const cells = [[String(t.n), "n"]];
+    if (labelled) cells.push([fmt(t.acc), "n" + (better ? " up" : "")], [fmt(t.tier1), "n"]);
+    cells.push([t.confidence == null ? "–" : t.confidence.toFixed(2), "n"], [secs(t.latency), "n"]);
+    for (const [v, cls] of cells) tr.append(el("td", cls, v));
     tb.append(tr);
   }
 }
 
 function matches(e, q, onlyBad) {
-  if (onlyBad && e.correct !== false && !(e.kind.startsWith("edge") && e.reason)) return false;
+  if (onlyBad && e.correct !== false) return false;
   if (!q) return true;
-  return (e.text + " " + e.id + " " + (e.label || "") + " " + (e.expected || "")).toLowerCase().includes(q);
+  return (e.text + " " + e.id + " " + (e.label || "") + " " + (e.expected || "") + " " + (e.reason || "")).toLowerCase().includes(q);
 }
 
 function eventNode(e, topic, now) {
   const dlq = topic.kind === "dlq";
   const node = el("div", "ev " + (dlq ? "none" : e.correct === true ? "ok" : e.correct === false ? "bad" : "none"));
-  node.append(el("div", "t", e.text === "" ? "(empty payload)" : e.text + (e.text_len > e.text.length ? "…" : "")));
+  node.append(el("div", "t", e.text === "" ? "(no text)" : e.text + (e.text_len > e.text.length ? "…" : "")));
   const m = el("div", "m");
   if (dlq) {
     m.append(el("span", null, "reason: " + (e.reason || "unknown")), el("span", null, e.id));
@@ -290,10 +305,9 @@ function eventNode(e, topic, now) {
     const mk = el("span", "mark");
     if (e.correct === true) { mk.append(el("span", "g", "✓ "), document.createTextNode("matches label")); }
     else if (e.correct === false) { mk.append(el("span", "c", "✗ "), document.createTextNode("labelled: " + e.expected)); }
-    else mk.append(document.createTextNode("unlabelled"));
-    m.append(mk);
+    else if (state.config.label_field) mk.append(document.createTextNode("unlabelled"));
+    if (mk.childNodes.length) m.append(mk);
   }
-  if (e.kind && e.kind !== "clear") m.append(el("span", "kind", e.kind));
   if (e.truncated) m.append(el("span", "kind", "context truncated"));
   m.append(el("span", "kind", ago(e.decided_at, now)));
   node.append(m);
@@ -330,9 +344,9 @@ function renderTables(s) {
     for (const v of [short(t), t.stream, String(t.len), t.accuracy && t.accuracy.n ? t.accuracy.right + "/" + t.accuracy.n : "–", t.group ? String(t.group.lag + t.group.pending) : "–"]) tr.append(el("td", null, v));
     a.append(tr);
   }
-  const m = $("#tbl-matrix"); m.replaceChildren();
+  const m = $("#tbl-matrix"); m.replaceChildren(); m.hidden = !s.config.label_field;
   const hm = el("tr"); hm.append(el("th", null, "Labelled as ↓ / ended in →")); for (const t of s.topics) hm.append(el("th", "n", short(t))); m.append(hm);
-  for (const r of s.config.options) {
+  for (const r of s.label_rows) {
     const tr = el("tr"); tr.append(el("td", null, r));
     for (const t of s.topics) tr.append(el("td", "n", String((s.matrix[r] || {})[t.stream] || 0)));
     m.append(tr);
@@ -351,7 +365,10 @@ function render() {
   const l = $("#live"); l.replaceChildren(el("span", "dot live"), el("span", null, "live"));
   pill($("#p-llm"), s.decisionlm.ok === true, s.decisionlm.ok === null ? "decisionLM: checking" : s.decisionlm.ok ? "decisionLM: responding" : "decisionLM: no answer (busy thinking, or down)");
   pill($("#p-ing"), s.ingestion.consumers > 0, s.ingestion.consumers + " decider" + (s.ingestion.consumers === 1 ? "" : "s") + " · " + s.totals.in_flight + " in flight");
-  renderTiles(s); renderBars(s); renderHeat(s); renderTiers(s); renderTopics(s); renderTables(s);
+  const labelled = !!s.config.label_field;
+  $("#heat-card").hidden = !labelled; $("#only-bad-wrap").hidden = !labelled; $("#window-note").hidden = !s.totals.window_limited;
+  $("#two").style.gridTemplateColumns = labelled ? "" : "1fr";
+  renderTiles(s); renderBars(s); if (labelled) renderHeat(s); renderTiers(s); renderTopics(s); renderTables(s);
 }
 
 async function tick() {
