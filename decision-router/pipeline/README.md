@@ -34,14 +34,13 @@ pipeline/
 │   ├── setup_groups.py          create streams and groups
 │   ├── inspect_streams.py       show lengths, groups, pending counts, latest dead letters
 │   └── requeue_dlq.py           move dead-lettered events back to ingestion
-├── demo/                        end-to-end demo: labelled support tickets, a publisher and a live dashboard (demo/README.md)
+├── demo/                        end-to-end demo: labelled support tickets and a publisher, run with the dashboard's accuracy panels on (demo/README.md)
 ├── tests/                       pytest suite; every test gets its own uniquely named streams and mock port
-│   ├── test_config.py, test_decider.py, test_runtime.py, test_worker.py, test_tools.py, test_supervisor.py
+│   ├── test_config.py, test_decider.py, test_runtime.py, test_worker.py, test_tools.py, test_supervisor.py, test_dashboard.py
 │   ├── test_end_to_end.py       slow: 1,000 events, kill a decider mid-run, poison message (about 3 minutes)
 │   └── mock_decisionlm.py       stand-in for decisionLM used by the tests
 ├── requirements.txt             redis>=5.0
-├── pyproject.toml               packaging (src layout, `pipeline` command), pytest and ruff settings
-└── LICENSE                      MIT
+└── pyproject.toml               packaging (src layout, `pipeline` command), pytest and ruff settings
 ```
 
 Commands: `python run.py start | setup | producer | decider NAME | worker STREAM [NAME] | inspect | requeue` (`--help` lists them).
@@ -118,7 +117,7 @@ Replace `process` in `worker.py` (or run your own consumer group on those stream
 
 ### See it working
 
-`demo/` publishes labelled support tickets through the pipeline and the real decisionLM and shows on a live dashboard which topic each lands in, and whether that matched the label.
+`demo/` publishes labelled support tickets through the pipeline and the real decisionLM and shows on the dashboard which topic each lands in, and whether that matched the label.
 See [`demo/README.md`](demo/README.md).
 
 ### The dashboard

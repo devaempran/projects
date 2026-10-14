@@ -11,7 +11,8 @@ Two components that work together, each with its own README, tests and config:
 
 ```
 events ──> Redis ingestion stream ──> pipeline/ (deciders) ──POST /api/decide──> service/ (decisionLM)
-                                          └──> one Redis stream per option ──> workers
+                                          ├──> one Redis stream per option ──> your consumers
+                                          └──> live dashboard (http://127.0.0.1:5055, optional)
 ```
 
 ## Quick start
@@ -44,12 +45,14 @@ You bring Redis, a config file and events. We run the rest.
    XREAD BLOCK 0 STREAMS tickets:billing $
    ```
 
+`start` also serves a live dashboard at `http://127.0.0.1:5055` (turn it off with `[dashboard] enabled = false`).
+
 Each result is the original event plus `label`, `confidence`, `source` and more. Events that cannot be decided go to `ingestion:dlq`
 (and `python pipeline/run.py requeue` puts them back). Details, every setting and the failure behaviour: [`pipeline/README.md`](pipeline/README.md).
 
 ## Layout and development
 
-Each component is self-contained: run its commands and tests from inside its own folder.
+Each component is self-contained: run its commands and tests from inside its own folder. `python run.py <command>` at this level is the same as `pipeline/run.py`.
 
 ```
 service/    pytest   (the model is faked; no GPU needed)

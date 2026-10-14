@@ -37,10 +37,10 @@ service/
 ├── RESULTS.md                  evaluation results, what changed because of them, limitations
 ├── pyproject.toml              packaging (src layout, `decisionlm` command), pytest and ruff settings
 ├── requirements.txt
-└── LICENSE                     MIT
+└── (the MIT LICENSE is one level up, in decision-router/)
 ```
 
-Tests run in CI on every push (`../.github/workflows/ci.yml`): the API tests with the model faked, and the pipeline tests against a Redis service.
+Tests run in CI on every push (`../../.github/workflows/ci.yml`): the API tests with the model faked, and the pipeline tests against a Redis service.
 
 ### Configuration (`config/decisionlm.toml`)
 
