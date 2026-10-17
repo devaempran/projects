@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>decision-router</title>
+<style>
+  :root{--bg:#0f1420;--panel:#171e2e;--line:#2a3550;--text:#e8ecf5;--mute:#98a3bd;--a:#5eb8ff;--b:#7ee0a8;--c:#ffb454;--d:#ff7a8a}
+  *{box-sizing:border-box;margin:0}
+  html,body{height:100%;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,sans-serif;overflow:hidden}
+  .slide{position:absolute;inset:0;padding:5vh 7vw;display:none;flex-direction:column;justify-content:center;gap:2.2vh}
+  .slide.active{display:flex;animation:in .35s ease}
+  @keyframes in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  h1{font-size:clamp(34px,5.4vw,76px);line-height:1.08;letter-spacing:-.02em}
+  h2{font-size:clamp(26px,3.4vw,46px);letter-spacing:-.01em}
+  .kicker{color:var(--a);font-size:clamp(12px,1.2vw,16px);letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+  p,li{font-size:clamp(16px,1.7vw,24px);line-height:1.45;color:var(--text)}
+  .mute{color:var(--mute)}
+  ul{padding-left:1.2em;display:grid;gap:1.1vh}
+  .grid{display:grid;gap:1.6vw}
+  .g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:2vh 1.6vw}
+  .card h3{font-size:clamp(15px,1.6vw,22px);margin-bottom:.8vh}
+  .card p,.card li{font-size:clamp(14px,1.35vw,19px);color:var(--mute)}
+  .big{font-size:clamp(34px,4.6vw,64px);font-weight:700;letter-spacing:-.02em;line-height:1}
+  .a{color:var(--a)}.b{color:var(--b)}.c{color:var(--c)}.d{color:var(--d)}
+  .tag{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:.3vh .9vw;font-size:clamp(12px,1.1vw,15px);color:var(--mute)}
+  .hl{border-color:var(--b);background:linear-gradient(180deg,#14261f,#171e2e)}
+  .bar{height:1.6vh;border-radius:99px;background:var(--line);overflow:hidden;margin-top:.8vh}
+  .bar i{display:block;height:100%;background:var(--a)}
+  .row{display:grid;grid-template-columns:9vw 1fr 5vw;align-items:center;gap:1vw;font-size:clamp(13px,1.3vw,18px);color:var(--mute)}
+  svg{width:100%;height:auto}
+  svg text{fill:var(--text);font-family:inherit}
+  code{background:#0b0f19;border:1px solid var(--line);border-radius:6px;padding:.1em .4em;font-size:.9em;color:var(--c)}
+  #hud{position:fixed;bottom:2vh;left:0;right:0;display:flex;justify-content:space-between;padding:0 3vw;color:var(--mute);font-size:13px;pointer-events:none}
+  #prog{position:fixed;top:0;left:0;height:3px;background:var(--a);transition:width .3s}
+</style>
+</head>
+<body>
+<div id="prog"></div>
+
+<!-- 1 -->
+<section class="slide">
+  <div class="kicker">Local LLM · event routing</div>
+  <h1>decision-router</h1>
+  <p class="mute" style="max-width:48ch;font-size:clamp(18px,2.2vw,32px)">Routing events with a local LLM that knows how much to trust its own answer.</p>
+  <div style="display:flex;gap:1vw;flex-wrap:wrap"><span class="tag">Fast model</span><span class="tag">Calibrated confidence</span><span class="tag">Never loses an event</span></div>
+</section>
+
+<!-- 2 -->
+<section class="slide">
+  <div class="kicker">The problem</div>
+  <h2>Recurring decisions need speed <em class="a" style="font-style:normal">and</em> a confidence you can act on</h2>
+  <p class="mute">“Which team owns this ticket?” A fixed option set, asked thousands of times.</p>
+  <div class="grid g2">
+    <div class="card"><h3>What the decision needs</h3><ul><li>An answer in milliseconds</li><li>A probability you can threshold on</li><li>No dropped or doubled events</li></ul></div>
+    <div class="card"><h3 class="d">What a plain LLM call gives</h3><ul><li><b>Slow:</b> it generates text token by token</li><li><b>Uncalibrated:</b> “I'm 95% sure” means little</li></ul></div>
+  </div>
+</section>
+
+<!-- 3 -->
+<section class="slide">
+  <div class="kicker">Architecture</div>
+  <h2>You bring the topic and the config. It handles the rest.</h2>
+  <svg viewBox="0 0 980 300" role="img" aria-label="Pipeline diagram">
+    <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8z" fill="#98a3bd"/></marker></defs>
+    <g stroke="#2a3550" fill="#171e2e" stroke-width="1.5">
+      <rect x="10" y="110" width="140" height="70" rx="12" stroke="#7ee0a8"/>
+      <rect x="205" y="110" width="130" height="70" rx="12"/>
+      <rect x="400" y="30" width="190" height="90" rx="12" stroke="#5eb8ff"/>
+      <rect x="400" y="175" width="190" height="90" rx="12" stroke="#ffb454"/>
+      <rect x="670" y="20" width="150" height="46" rx="10"/>
+      <rect x="670" y="78" width="150" height="46" rx="10"/>
+      <rect x="670" y="170" width="150" height="46" rx="10" stroke="#ff7a8a"/>
+      <rect x="850" y="60" width="120" height="110" rx="12" stroke="#7ee0a8"/>
+    </g>
+    <g font-size="15" text-anchor="middle">
+      <text x="80" y="140" font-weight="700">Ingestion</text><text x="80" y="162" fill="#98a3bd" style="fill:#98a3bd">Redis stream</text>
+      <text x="270" y="140" font-weight="700">Deciders</text><text x="270" y="162" style="fill:#98a3bd">/api/decide</text>
+      <text x="495" y="62" font-weight="700">Tier 1 · one pass</text><text x="495" y="85" style="fill:#98a3bd">~50 ms</text><text x="495" y="105" style="fill:#7ee0a8">answers most events</text>
+      <text x="495" y="207" font-weight="700">Tier 2 · reasoner</text><text x="495" y="230" style="fill:#98a3bd">only if conf &lt; 0.85</text><text x="495" y="250" style="fill:#ffb454">~22% of items</text>
+      <text x="745" y="49">stream: option A</text><text x="745" y="107">stream: option B …</text><text x="745" y="198" style="fill:#ff7a8a">dead-letter stream</text>
+      <text x="910" y="108" font-weight="700">Live</text><text x="910" y="130" font-weight="700">dashboard</text>
+    </g>
+    <g stroke="#98a3bd" stroke-width="1.8" fill="none" marker-end="url(#ar)">
+      <path d="M150,145 H203"/><path d="M335,135 C365,135 370,80 398,80"/><path d="M495,120 V173" stroke-dasharray="5 4"/>
+      <path d="M590,60 C620,60 630,43 668,43"/><path d="M590,90 C620,90 630,101 668,101"/><path d="M590,230 C630,230 640,200 668,196"/>
+      <path d="M820,43 C840,43 840,80 848,90"/><path d="M820,101 H848"/><path d="M820,193 C840,193 840,150 848,140"/>
+    </g>
+  </svg>
+  <div class="grid g3">
+    <div class="card hl"><h3 class="b">1 · You set up</h3><p>An ingestion topic and one config file. That is all.</p></div>
+    <div class="card hl"><h3 class="b">2 · It routes</h3><p>One command starts deciders, model serving, per-option streams and dead-letter.</p></div>
+    <div class="card hl"><h3 class="b">3 · You watch</h3><p>A live dashboard shows each decision, confidence and tier as it happens.</p></div>
+  </div>
+</section>
+
+<!-- 4 -->
+<section class="slide">
+  <div class="kicker">Tier 1</div>
+  <h2>Decide in one forward pass</h2>
+  <div class="grid g2" style="align-items:center">
+    <ul>
+      <li><b>Qwen3-8B (Q8_0)</b> reads the prompt</li>
+      <li>Take the logits of the <b>option letters</b> at the answer position</li>
+      <li>Softmax, divided by a <b>temperature</b>, gives probabilities</li>
+      <li>No text generated</li>
+    </ul>
+    <div class="card" style="text-align:center"><div class="big a">~50 ms</div><p>per decision</p></div>
+  </div>
+  <div class="card hl"><h3 class="b">Swappable model</h3><p>The model is configuration. Pick a smaller one for latency or a larger one for accuracy, then refit the temperature.</p></div>
+</section>
+
+<!-- 5 -->
+<section class="slide">
+  <div class="kicker">Calibration</div>
+  <h2>A probability you can trust</h2>
+  <p class="mute">Temperature fit on a validation split, preferring under-confidence.</p>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Expected calibration error</h3>
+      <div class="big b">0.027</div><p>on ARC (fit set)</p>
+      <p style="margin-top:1vh">Same temperature, <b>ECE &lt; 0.05</b> on MMLU, CommonsenseQA and BoolQ.</p>
+    </div>
+    <div class="card">
+      <h3>Accuracy vs. number of options</h3>
+      <div class="row"><span>2 options</span><div class="bar"><i style="width:95.3%"></i></div><b>0.953</b></div>
+      <div class="row"><span>26 options</span><div class="bar"><i style="width:77.9%;background:var(--c)"></i></div><b>0.779</b></div>
+      <p style="margin-top:1vh">More choices, harder decision. Keep option sets tight.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 6 -->
+<section class="slide">
+  <div class="kicker">Tier 2</div>
+  <h2>Escalate only when unsure</h2>
+  <p class="mute">Below 0.85 confidence, the same model reasons with thinking on, options shuffled, bounded by tokens and 150 s.</p>
+  <div class="grid g3">
+    <div class="card"><p>Overall accuracy</p><div class="big"><span class="mute">0.902</span> <span class="b">→ 0.940</span></div></div>
+    <div class="card"><p>Items escalated</p><div class="big c">22%</div></div>
+    <div class="card"><p>On low-confidence items</p><div class="big"><span class="mute">0.752</span> <span class="b">→ 0.846</span></div><p>tier 1 vs. reasoner</p></div>
+  </div>
+  <div class="card hl"><h3 class="b">Tunable trade-off</h3><p>Threshold and tier-2 model are config: raise the threshold for accuracy, lower it for latency.</p></div>
+</section>
+
+<!-- 7 -->
+<section class="slide">
+  <div class="kicker">Serving engineering</div>
+  <h2>Measure, then fix</h2>
+  <div class="grid g2">
+    <div class="card"><h3 class="a">Latency</h3><ul><li>Prefill is <b>98%</b> of latency</li><li>The Python path added <b>110 ms</b></li><li>A last-logit read removed it</li></ul></div>
+    <div class="card"><h3 class="a">Concurrency</h3><ul><li>Flask dev server crashed at <b>4</b> concurrent requests (llama.cpp context is not thread-safe)</li><li>Single-worker waitress + model lock: <b>16 concurrent, 0 errors</b></li></ul></div>
+  </div>
+</section>
+
+<!-- 8 -->
+<section class="slide">
+  <div class="kicker">Pipeline reliability</div>
+  <h2>Never lose, never double</h2>
+  <div class="grid g2">
+    <ul>
+      <li>Consumer groups</li>
+      <li>Retries with backoff</li>
+      <li><code>XAUTOCLAIM</code> reclaims abandoned messages</li>
+      <li>One Lua script forwards, acknowledges and de-duplicates atomically</li>
+      <li>Config validation rejects a reclaim time shorter than the HTTP timeout, which would decide slow events twice</li>
+    </ul>
+    <div class="card" style="text-align:center;align-self:center">
+      <p>Proof</p><div class="big b">1,000 events</div>
+      <p style="margin-top:1vh">one decider killed mid-run</p>
+      <div class="big" style="margin-top:1vh"><span class="b">0</span> lost · <span class="b">0</span> duplicated</div>
+    </div>
+  </div>
+</section>
+
+<!-- 9 -->
+<section class="slide">
+  <div class="kicker">Live demo</div>
+  <h2>92 support tickets through the real service</h2>
+  <div class="grid g4">
+    <div class="card"><div class="big b">84</div><p>routed</p></div>
+    <div class="card"><div class="big d">3</div><p>dead-lettered, with reasons</p></div>
+    <div class="card"><div class="big c">5</div><p>duplicates dropped</p></div>
+    <div class="card"><div class="big a">85.7%</div><p>accuracy</p></div>
+  </div>
+  <div class="grid g2">
+    <div class="card hl"><h3 class="b">Seen on the live dashboard</h3><p>Every decision, its confidence and which tier handled it, as events flow.</p></div>
+    <div class="card"><h3 class="c">What it taught</h3><p>The reasoner did not help on tickets, and followed an injected instruction that tier 1 resisted. Refit the threshold on real data.</p></div>
+  </div>
+</section>
+
+<!-- 10 -->
+<section class="slide">
+  <div class="kicker">Next steps</div>
+  <h2>From benchmarks to your data</h2>
+  <div class="grid g3">
+    <div class="card"><h3 class="a">1 · Label</h3><p>A few hundred real decisions; refit the temperature and the threshold.</p></div>
+    <div class="card"><h3 class="a">2 · Upgrade</h3><p>Try a larger tier-2 model. Models are swappable in config.</p></div>
+    <div class="card"><h3 class="a">3 · Monitor</h3><p>Track escalation rate and sampled fast-path accuracy on the dashboard.</p></div>
+  </div>
+  <p class="mute" style="font-size:clamp(12px,1.1vw,15px)">Model numbers: public benchmarks on one RTX 5060 Ti (16 GB), measured Oct 10–12, 2026 (RESULTS.md).</p>
+</section>
+
+<div id="hud"><span>decision-router</span><span id="num"></span></div>
+<script>
+  const s=[...document.querySelectorAll('.slide')];let i=0;
+  const go=n=>{i=Math.max(0,Math.min(s.length-1,n));s.forEach((e,k)=>e.classList.toggle('active',k===i));
+    num.textContent=(i+1)+' / '+s.length;prog.style.width=((i+1)/s.length*100)+'%';location.hash=i+1};
+  addEventListener('keydown',e=>{
+    if(['ArrowRight','PageDown',' ','Enter'].includes(e.key))go(i+1);
+    if(['ArrowLeft','PageUp','Backspace'].includes(e.key))go(i-1);
+    if(e.key==='Home')go(0);if(e.key==='End')go(s.length-1);
+    if(e.key==='f')document.documentElement.requestFullscreen?.();});
+  addEventListener('click',e=>go(e.clientX>innerWidth/2?i+1:i-1));
+  go((parseInt(location.hash.slice(1))||1)-1);
+</script>
+</body>
+</html>
